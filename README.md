@@ -129,6 +129,19 @@ The all-in-one node loads CLIP/text encoders and VAEs internally. Choose filenam
 
 External CLIP/VAE loader connections are not part of this node's interface. The llama.cpp `llm_model` and `mmproj` fields belong to the prompt enhancer and do not replace these model selections.
 
+### Separate MiniMax and Qwen LoRAs
+
+| Model | LoRA selector | Strength |
+|---|---|---|
+| MiniMax H3 | `lora_name` | `lora_strength` |
+| Qwen Image 2.1 (V2V only) | `qwen_lora_name` | `qwen_lora_strength` |
+
+Place LoRA files in `ComfyUI/models/loras/` (subfolders are supported). The Qwen selector lists installed LoRAs with Qwen-named files first; filenames are not a compatibility check. Choose a LoRA compatible with the Qwen Image 2.1 diffusion model you selected.
+
+The Qwen LoRA is applied only to the Qwen diffusion model before first-frame editing. It does not patch H3, the text encoder, or the llama.cpp prompt enhancer. Select `(none)` or set `qwen_lora_strength` to 0 to disable it. One Qwen LoRA is supported per run. LoRA selection does not change `qwen_steps` automatically.
+
+Existing workflows default to no Qwen LoRA. Recreate the V2V node or load an updated example to display the two new controls.
+
 ### Required model files (examples)
 
 | Folder under `ComfyUI/models` | Models |

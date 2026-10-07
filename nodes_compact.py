@@ -48,8 +48,8 @@ def extra_inputs():
     return {
         "additional_system_prompt": ("STRING", {"multiline": True, "default": ""}),
         "prompt_override": ("STRING", {"multiline": True, "default": "", "tooltip": "Complete H3 prompt; skips llama.cpp"}),
-        "lora_name": (choices("loras", ["ref2v_turbo"], optional=True),),
-        "lora_strength": ("FLOAT", {"default": 1.0, "min": 0, "max": 2, "step": 0.05}),
+        "lora_name": (choices("loras", ["ref2v_turbo"], optional=True), {"tooltip": "MiniMax H3 LoRA only. Use qwen_lora_name for the Qwen image edit."}),
+        "lora_strength": ("FLOAT", {"default": 1.0, "min": 0, "max": 2, "step": 0.05, "tooltip": "Strength of the MiniMax H3 LoRA."}),
         "ref_image_size": (["match", "max"], {"default": "match"}),
         "max_tokens": ("INT", {"default": 3072, "min": 512, "max": 32768}),
         "context_size": ("INT", {"default": 32768, "min": 4096, "max": 262144, "step": 1024}),
@@ -326,13 +326,15 @@ class MiniMaxH3V2VGenerate(_Pipeline):
             "control_strength": ("FLOAT", {"default": 1.0, "min": 0, "max": 3, "step": 0.05}),
             "qwen_steps": ("INT", {"default": 25, "min": 1, "max": 100}),
             "qwen_resolution": ("INT", {"default": 1024, "min": 512, "max": 2048, "step": 32}),
+            "qwen_lora_name": (choices("loras", ["qwen"], optional=True), {"tooltip": "LoRA for the Qwen Image 2.1 diffusion model only, loaded from models/loras. Select (none) to disable."}),
+            "qwen_lora_strength": ("FLOAT", {"default": 1.0, "min": 0, "max": 2, "step": 0.05, "tooltip": "Strength of the Qwen image-edit LoRA; 0 disables it."}),
         })
         return {"required": required, "optional": optional}
 
     def generate(self, source_video, ref_image, fun_controlnet, qwen_model,
                  qwen_text_encoder, qwen_vae, edit_mode, start_seconds=0.0, max_seconds=15.08,
                  control_strength=1.0, qwen_steps=25, qwen_resolution=1024,
-                 **kw):
+                 qwen_lora_name=NONE, qwen_lora_strength=1.0, **kw):
         import torch
         import nodes
         from comfy_extras import nodes_minimax_h3 as h3
@@ -360,6 +362,9 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         # Qwen always edits the source first frame using the connected reference.
         qloader = _Pipeline()
         qm = qloader._load("model", qwen_model)
+        if qwen_lora_name != NONE and qwen_lora_strength != 0:
+            qm = nodes.LoraLoaderModelOnly().load_lora_model_only(
+                qm, qwen_lora_name, qwen_lora_strength)[0]
         qc = qloader._load("clip_qwen", qwen_text_encoder)
         qv = qloader._load("vae", qwen_vae)
         edit_text = qwen_prompt
