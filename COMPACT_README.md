@@ -16,11 +16,20 @@ Select **MiniMax H3 R2V Generate (Sample + VAE Decode)** or **MiniMax H3 V2V Gen
 
 The primary `images` output is an **IMAGE batch of generated frames after the internal sampler and VAE Decode**. Connect it directly to **Preview Image** or **VHS Video Combine**. For Video Combine, set the frame rate to **24 FPS**; R2V can also supply its `audio` output. V2V has no audio output.
 
-**V2V exposes only one output: `images` (IMAGE).** Connect it to VHS Video Combine at 24 FPS to save a silent video, or to Preview Image. Width, height, pose, edited reference, prompt, and frame-count debug sockets are not exposed. R2V also provides VIDEO and AUDIO outputs. No external sampler or VAE Decode node is needed.
+**V2V outputs:**
+
+| Output | Type | Content |
+|---|---|---|
+| `images` | IMAGE | H3-generated video frames after VAE Decode; connect to VHS Video Combine at 24 FPS or Preview Image |
+| `qwen_image` | IMAGE | Decoded Qwen edit at its generated resolution, before resizing for H3; connect to Preview Image or Save Image |
+| `minimax_prompt` | STRING | Enhanced MiniMax prompt actually passed to H3, including the silent-video policy |
+| `qwen_prompt` | STRING | Enhanced edit prompt actually passed to Qwen Image 2.1 |
+
+Connect either STRING output to a compatible text display/save node to inspect the prompt. All outputs become available after the all-in-one generation finishes; connecting only the Qwen preview still runs the full V2V pipeline. R2V also provides VIDEO and AUDIO outputs. No external sampler or VAE Decode node is needed.
 
 Nodes labeled **Conditioning (Requires Sampler)** are separate advanced nodes and return intermediate model/conditioning/latent data.
 
-**Updating existing workflows:** recreate the V2V node or load an updated example to remove obsolete sockets. V2V now has two IMAGE inputs and one IMAGE output. R2V keeps `images` first and `video` second.
+**Updating existing workflows:** recreate the V2V node or load an updated example to remove obsolete sockets. V2V has two IMAGE inputs and four outputs: `images`, `qwen_image`, `minimax_prompt`, and `qwen_prompt`. The original `images` output remains slot 0. R2V keeps `images` first and `video` second.
 
 Try [V2V decoded IMAGE frames](example_workflows/v2v_decoded_images.json): source video + reference image → generation → Preview Image.
 
@@ -62,9 +71,22 @@ Internally:
 5. Use the MiniMax prompt prepared by the shared enhancer. Anchor the Qwen-edited frame at frame 0.
 6. Load the H3 Fun ControlNet Union patch and pass the source IMAGE batch directly to its `control_video` input. No pose preprocessor or mask is used.
 7. Apply the **experimental video-only wrapper**: target audio is a zero-length token stream inside the H3 transformer. The sampler carries a zero audio placeholder only for native AV-container compatibility; its noise generator produces randomness only for video. Nothing is decoded or exported as audio.
-8. Sample and VAE-decode the generated frames. Return a single IMAGE batch; no audio is generated, decoded, or returned.
+8. Sample and VAE-decode the video frames. Return the frames, the Qwen-generated image before H3 resizing, and the two enhanced prompts; no audio is generated, decoded, or returned.
 
 `change clothes` preserves source identity and takes the reference outfit. `change person` takes target identity and preserves source performance. A custom instruction can describe either edit in Indonesian or English. Direct RGB control follows the requested workflow; compatibility and motion adherence depend on the selected ControlNet weights. Exact pixel-level/person-motion equality is not guaranteed by a generative model. Full-frame edits can alter backgrounds.
+
+### CLIP and VAE selection
+
+The all-in-one node loads CLIP/text encoders and VAEs internally. Choose filenames in these dropdowns:
+
+| Purpose | Node field | Model folder |
+|---|---|---|
+| MiniMax CLIP/text encoder | `h3_text_encoder` | `ComfyUI/models/text_encoders/` |
+| MiniMax video VAE | `h3_video_vae` | `ComfyUI/models/vae/` |
+| Qwen CLIP/text encoder | `qwen_text_encoder` | `ComfyUI/models/text_encoders/` |
+| Qwen image VAE | `qwen_vae` | `ComfyUI/models/vae/` |
+
+External CLIP/VAE loader connections are not part of this node's interface. The llama.cpp `llm_model` and `mmproj` fields belong to the prompt enhancer and do not replace these model selections.
 
 ### Required model files (examples)
 
@@ -87,7 +109,7 @@ Before diffusion sampling, the selected vision GGUF reads the source first frame
 - `qwen_prompt`: an editing directive using `<image1>` for the source first frame and `<image2>` for the reference.
 - `minimax_prompt`: the six-section H3 video-editing prompt, preserving source performance and using the intended edited frame as its frame-0 guide.
 
-These are internal values, not separate user prompt fields or output sockets. The enhancer runs before Qwen generates the edited frame. The MiniMax prompt describes the planned edit; it does not claim to inspect a result that has not been generated yet.
+These are generated from the single user instruction and exposed as STRING outputs for inspection. The enhancer runs before Qwen generates the edited frame. The MiniMax prompt describes the planned edit; it does not claim to inspect a result that has not been generated yet.
 
 Qwen editing rules are adapted from the [official edit enhancer system prompt](https://github.com/QwenLM/Qwen-Image-2.1/blob/main/prompt_rewrite/prompts/system_prompt_edit.txt). Qwen also publishes [PE-I2I weights](https://huggingface.co/Qwen/Qwen-Image-2.1-PE-I2I); this node uses your selected llama.cpp vision model with adapted instructions, rather than requiring those specific weights.
 
@@ -114,7 +136,7 @@ Also available: 1:1, 4:3, 3:4, 3:2, 2:3, 21:9, same as reference, custom. Set cu
 - `additional_system_prompt` appends user system instructions to the official-format system prompt. Node-level policies still enforce the first-frame option and V2V's audio-free prompt fields.
 - R2V only: `prompt_override` skips the LLM and must contain the six official sections in order. Truncated or incorrectly formatted responses fail visibly rather than being passed silently to H3.
 - The managed llama-server is stopped after prompting by default to release VRAM. An external server is never stopped automatically. Before prompting, GPU-resident ComfyUI models are unloaded so the external LLM can load; ComfyUI reloads models when needed.
-- V2V exposes decoded IMAGE frames only. R2V additionally exposes its prompt, canvas size and frame count.
+- V2V exposes decoded video frames, the Qwen edit, and both enhanced prompts. R2V additionally exposes its prompt, canvas size and frame count.
 - These additions do not replace or change the existing prompter, I2V, V2V or Qwen keyframe nodes.
 
 ## Validation status

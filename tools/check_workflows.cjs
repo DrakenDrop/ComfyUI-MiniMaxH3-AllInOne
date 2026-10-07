@@ -25,7 +25,9 @@ for (const file of fs.readdirSync(path.join(root, 'example_workflows')).filter(f
   assert.equal(pipeline.outputs[0].type, 'IMAGE');
   assert.equal(pipeline.widgets_values_named.resolution, '480p');
   if (pipeline.type === 'MiniMaxH3V2VGenerate') {
-    assert.equal(pipeline.outputs.length, 1);
+    assert.deepEqual(pipeline.outputs.map(o => [o.name, o.type]), [['images', 'IMAGE'], ['qwen_image', 'IMAGE'], ['minimax_prompt', 'STRING'], ['qwen_prompt', 'STRING']]);
+    const qwenLink = links.get(pipeline.outputs[1].links[0]);
+    assert.equal(nodes.get(qwenLink[3]).type, 'PreviewImage');
     for (const key of ['pose_checkpoint', 'pose_strength', 'qwen_prompt', 'prompt_override']) assert(!(key in pipeline.widgets_values_named));
     const combine = graph.nodes.find(n => n.type === 'VHS_VideoCombine');
     if (combine) {
@@ -54,7 +56,7 @@ for (const file of fs.readdirSync(path.join(root, 'example_workflows')).filter(f
 }
 const compact = fs.readFileSync(path.join(root, 'nodes_compact.py'), 'utf8');
 assert(!compact.slice(compact.indexOf('class MiniMaxH3V2VGenerate')).includes('nodes_video'));
-assert(compact.includes('return (images,)'));
+assert(compact.includes('return images, qwen_image, prompt, qwen_prompt'));
 assert(compact.includes('silent=True'));
 assert(compact.includes('control_video=source'));
 assert(!compact.includes('nodes_sdpose'));

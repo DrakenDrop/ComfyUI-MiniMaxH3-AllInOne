@@ -29,8 +29,8 @@ def common_inputs():
     import comfy.samplers
     return {
         "h3_model": (choices("diffusion_models", ["ref2va"]),),
-        "h3_text_encoder": (choices("text_encoders", ["minimax", "h3"]),),
-        "h3_video_vae": (choices("vae", ["h3_video", "lynnreal"]),),
+        "h3_text_encoder": (choices("text_encoders", ["minimax", "h3"]), {"tooltip": "H3 CLIP/text encoder loaded internally from models/text_encoders."}),
+        "h3_video_vae": (choices("vae", ["h3_video", "lynnreal"]), {"tooltip": "H3 video VAE loaded internally from models/vae."}),
         "llm_model": (local_models.model_choices(CFG),),
         "mmproj": (local_models.mmproj_choices(CFG), {"default": "auto"}),
         "instruction": ("STRING", {"multiline": True, "default": ""}),
@@ -201,9 +201,9 @@ class MiniMaxH3R2VGenerate(_Pipeline):
 class MiniMaxH3V2VGenerate(_Pipeline):
     CATEGORY = CATEGORY
     FUNCTION = "generate"
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("images",)
-    DESCRIPTION = "Source IMAGE batch (24 FPS) + reference IMAGE -> Qwen Image 2.1 first-frame edit -> Fun ControlNet -> H3 sampler -> VAE Decode IMAGE frames. No audio generation or debug outputs. Video-only denoising is experimental."
+    RETURN_TYPES = ("IMAGE", "IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("images", "qwen_image", "minimax_prompt", "qwen_prompt")
+    DESCRIPTION = "Source IMAGE batch (24 FPS) + reference IMAGE -> Qwen Image 2.1 first-frame edit -> Fun ControlNet -> H3 sampler -> VAE Decode IMAGE frames. Also returns the decoded Qwen edit before H3 resizing as qwen_image and both enhanced prompts. No audio generation. Video-only denoising is experimental."
 
 
     def _enhance_edit(self, source, reference, instruction, frames, **kw):
@@ -314,8 +314,8 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         required.update({
             "fun_controlnet": (choices("model_patches", ["minimax_h3_fun"]),),
             "qwen_model": (choices("diffusion_models", ["qwen_image_2.1", "qwen_image21", "qwen_image_21"]),),
-            "qwen_text_encoder": (choices("text_encoders", ["qwen3vl_8b", "qwen3_vl_8b", "qwen_image_2.1", "qwen3_vl", "qwen3vl"]),),
-            "qwen_vae": (choices("vae", ["qwen_image_2.1", "qwen_image21", "qwen_image"]),),
+            "qwen_text_encoder": (choices("text_encoders", ["qwen3vl_8b", "qwen3_vl_8b", "qwen_image_2.1", "qwen3_vl", "qwen3vl"]), {"tooltip": "Qwen Image 2.1 CLIP/text encoder loaded internally from models/text_encoders."}),
+            "qwen_vae": (choices("vae", ["qwen_image_2.1", "qwen_image21", "qwen_image"]), {"tooltip": "Qwen Image 2.1 VAE loaded internally from models/vae; decodes qwen_image."}),
             "edit_mode": (["change clothes", "change person", "custom"], {"default": "change clothes"}),
         })
         optional = extra_inputs()
@@ -364,10 +364,10 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         qv = qloader._load("vae", qwen_vae)
         edit_text = qwen_prompt
         qwen_images = [source[:1], ref_image[:1]]
-        first = MiniMaxH3QwenKeyframeEdit._qwen_edit(qm, qc, qv, edit_text,
+        qwen_image = MiniMaxH3QwenKeyframeEdit._qwen_edit(qm, qc, qv, edit_text,
             qwen_images, kw["seed"], qwen_steps, 1.0, "euler", "simple", qwen_resolution)
         del qm, qc, qv, qloader
-        first = v2v.resize_frames(first, w, h)
+        first = v2v.resize_frames(qwen_image, w, h)
 
         model, clip, vae = self._base_models(**kw)
         positive, latent = args(h3.MiniMaxH3ReferenceToVideo.execute(
@@ -383,7 +383,7 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         model = patch_video_only(model)
         images, _ = self._sample(model, positive, latent, vae, kw["seed"], kw["steps"], kw["sampler_name"], kw["scheduler"], silent=True)
         images = images[:frames]
-        return (images,)
+        return images, qwen_image, prompt, qwen_prompt
 
 
 NODE_CLASS_MAPPINGS = {"MiniMaxH3R2VGenerate": MiniMaxH3R2VGenerate, "MiniMaxH3V2VGenerate": MiniMaxH3V2VGenerate}

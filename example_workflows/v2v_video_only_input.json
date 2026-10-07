@@ -1,6 +1,6 @@
 {
-  "last_node_id": 4,
-  "last_link_id": 3,
+  "last_node_id": 5,
+  "last_link_id": 4,
   "nodes": [
     {
       "id": 1,
@@ -157,6 +157,26 @@
             3
           ],
           "slot_index": 0
+        },
+        {
+          "name": "qwen_image",
+          "type": "IMAGE",
+          "links": [
+            4
+          ],
+          "slot_index": 1
+        },
+        {
+          "name": "minimax_prompt",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 2
+        },
+        {
+          "name": "qwen_prompt",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 3
         }
       ],
       "title": "V2V: Sample + VAE Decode (IMAGE, Silent)",
@@ -302,6 +322,35 @@
         "pingpong": false,
         "save_output": true
       }
+    },
+    {
+      "id": 5,
+      "type": "PreviewImage",
+      "pos": [
+        1030,
+        650
+      ],
+      "size": [
+        360,
+        400
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 4
+        }
+      ],
+      "outputs": [],
+      "title": "Qwen generated image",
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": [],
+      "widgets_values_named": {}
     }
   ],
   "links": [
@@ -326,6 +375,14 @@
       3,
       0,
       4,
+      0,
+      "IMAGE"
+    ],
+    [
+      4,
+      3,
+      1,
+      5,
       0,
       "IMAGE"
     ]
