@@ -98,7 +98,7 @@ def _normalize_h3_labels(text):
                   lambda m: f"<{m[1].title()} {int(m[2])}>", text, flags=re.I)
 
 
-def parse_edit_response(content, style="official", has_reference=True):
+def parse_edit_response(content, style="official", has_reference=True, has_video_reference=True):
     try:
         result = json.loads(strip_fence(content))
     except (TypeError, AttributeError, json.JSONDecodeError) as exc:
@@ -120,17 +120,21 @@ def parse_edit_response(content, style="official", has_reference=True):
         raise V2VPromptError(str(exc)) from exc
     minimax = _normalize_h3_labels(minimax)
     if re.search(r"<image\s*\d+>", minimax, re.I):
-        raise V2VPromptError("MiniMax prompt contains Qwen image labels. H3 uses <Video 1> and <Picture 1>.")
-    missing = [tag for tag in ("<Video 1>", "<Picture 1>") if tag not in minimax]
+        raise V2VPromptError("MiniMax prompt contains Qwen image labels. Use only the connected H3 asset labels.")
+    required_h3 = ("<Video 1>", "<Picture 1>") if has_video_reference else ("<Picture 1>",)
+    missing = [tag for tag in required_h3 if tag not in minimax]
     if missing:
         raise V2VPromptError(
             "MiniMax prompt is missing " + ", ".join(missing) + ". "
-            "<Video 1> is the source video; <Picture 1> is the Qwen-edited appearance "
-            "reference, including when no optional ref_image is connected. Describe their roles.")
+            + ("<Video 1> is the source video. " if has_video_reference else
+               "H3 has no reference video; motion comes from skeleton control. ") +
+            "<Picture 1> is the Qwen-edited appearance reference, including when no optional ref_image is connected. Describe its role.")
     if any(n != "1" for n in re.findall(r"<Picture\s+(\d+)>", minimax, re.I)):
         raise V2VPromptError("MiniMax receives only one picture: the Qwen-edited <Picture 1>.")
     if any(n != "1" for n in re.findall(r"<Video\s+(\d+)>", minimax, re.I)):
         raise V2VPromptError("MiniMax receives only one video: source <Video 1>.")
+    if not has_video_reference and (re.search(r"<Video\s+\d+>", minimax, re.I) or "[video editing]" in minimax.lower()):
+        raise V2VPromptError("Pose-only H3 receives no <Video N> asset. Use <Picture 1>, skeleton control and [reference generation].")
     _check_v2v_anchor(minimax)
     return qwen.strip(), minimax
 
@@ -152,10 +156,10 @@ def _check_v2v_anchor(prompt):
             "reference; remove first/last-frame, keyframe and shot-begins-from claims.")
 
 
-def parse_edit_response_with_repair(content, style, repair, has_reference=True):
+def parse_edit_response_with_repair(content, style, repair, has_reference=True, has_video_reference=True):
     """Repair an invalid MiniMax prompt once, preserving the already validated Qwen prompt."""
     try:
-        return parse_edit_response(content, style=style, has_reference=has_reference)
+        return parse_edit_response(content, style=style, has_reference=has_reference, has_video_reference=has_video_reference)
     except V2VPromptError as exc:
         original_qwen = json.loads(strip_fence(content))["qwen_prompt"].strip()
         corrected = repair(str(exc))
@@ -168,7 +172,7 @@ def parse_edit_response_with_repair(content, style, repair, has_reference=True):
             raise ValueError("MiniMax prompt repair must return both prompt fields after one retry.")
         repaired["qwen_prompt"] = original_qwen
         try:
-            _, minimax = parse_edit_response(json.dumps(repaired), style=style, has_reference=has_reference)
+            _, minimax = parse_edit_response(json.dumps(repaired), style=style, has_reference=has_reference, has_video_reference=has_video_reference)
         except V2VPromptError as exc:
             raise type(exc)("MiniMax prompt is still invalid after one repair attempt: " + str(exc)) from exc
         return original_qwen, minimax

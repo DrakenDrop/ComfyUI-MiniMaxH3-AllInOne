@@ -23,7 +23,7 @@ for (const file of fs.readdirSync(path.join(root, 'example_workflows')).filter(f
   const pipeline = graph.nodes.find(n => n.type.startsWith('MiniMaxH3'));
   assert(pipeline);
   assert.equal(pipeline.outputs[0].type, 'IMAGE');
-  assert.equal(pipeline.widgets_values_named.resolution, file === 'v2v_reference_native.json' ? '768p (native)' : '480p');
+  assert.equal(pipeline.widgets_values_named.resolution, ['v2v_reference_native.json', 'v2v_pose_only.json'].includes(file) ? '768p (native)' : '480p');
   if (pipeline.type === 'MiniMaxH3V2VGenerate') {
     assert.deepEqual(pipeline.outputs.map(o => [o.name, o.type]), [['images', 'IMAGE'], ['qwen_image', 'IMAGE'], ['minimax_prompt', 'STRING'], ['qwen_prompt', 'STRING']]);
     const qwenLink = links.get(pipeline.outputs[1].links[0]);
@@ -59,7 +59,8 @@ const compact = fs.readFileSync(path.join(root, 'nodes_compact.py'), 'utf8');
 assert(!compact.slice(compact.indexOf('class MiniMaxH3V2VGenerate')).includes('nodes_video'));
 assert(compact.includes('return images, qwen_image, prompt, qwen_prompt'));
 assert(compact.includes('silent=strict_video_only, timer=timer'));
-assert(compact.includes('control_video=source'));
+assert(compact.includes('control_video=control_frames'));
+assert(compact.includes('reference_videos = None if pose_only else'));
 assert(!compact.includes('nodes_sdpose'));
 assert(compact.includes('qwen_images = [source[:1]]'));
 assert(compact.includes('ref_images={"ref_image_0": qwen_image}'));

@@ -53,12 +53,12 @@ Source video is required; the additional reference image is optional:
 
 | Input | Internal use |
 |---|---|
-| `source_video` (IMAGE batch) | Source frames connected directly to Fun ControlNet control_video |
+| `source_video` (IMAGE batch) | Source frames for Qwen and internal pose extraction (or legacy RGB control) |
 | `ref_image` (IMAGE) | Optional target clothing/person reference supplied as Qwen Image Edit's second image |
 
 The `source_video` socket accepts an **IMAGE batch**, matching native H3's `ref_video` input. Connect the **IMAGE output of VHS Load Video**. Set `force_rate = 24`, `select_every_nth = 1`, and leave the loader's VAE input disconnected. IMAGE batches contain no FPS metadata, so the node interprets the frames at **24 FPS**. A batch loaded at a different FPS would change timing; resample in the video loader first.
 
-Qwen's first image is extracted automatically from source frame 0. Qwen editing, Fun ControlNet, H3 sampling, and VAE Decode run inside the node. There are no external pose, edit mask, or pre-edited-frame input sockets. The source audio is ignored; the node has no audio input, audio VAE loader, audio decode, or audio output.
+Qwen's first image is extracted automatically from source frame 0. Qwen editing, DWPose extraction in pose-only mode, Fun ControlNet, H3 sampling, and VAE Decode run inside the node. There are no external pose, edit mask, or pre-edited-frame input sockets. The source audio is ignored; the node has no audio input, audio VAE loader, audio decode, or audio output.
 
 After updating, recreate the V2V node or load the updated example. The `source_video` socket now uses IMAGE rather than VIDEO; reconnect the video loader\'s IMAGE output. Only `source_video` must be connected. `ref_image` may remain disconnected. Use `v2v_text_only_edit.json` for a source-video-and-text example.
 
@@ -69,15 +69,15 @@ Internally:
 3. Enhance the single user instruction into separate internal Qwen and MiniMax prompts.
 4. Using the Qwen prompt prepared by the shared enhancer, Qwen Image 2.1 edits source frame 0 as Image 1. A connected reference becomes Image 2; otherwise the text instruction supplies the target appearance.
 5. Use the MiniMax prompt prepared by the shared enhancer. Supply only the Qwen-edited image as H3's appearance reference, without a forced first-frame guide.
-6. Load the H3 Fun ControlNet Union patch and pass the source IMAGE batch directly to its `control_video` input. No pose preprocessor or mask is used.
+6. In pose-only mode, extract DWPose skeletons internally and send them to Fun ControlNet; omit source RGB reference-video conditioning in H3. Legacy RGB mode instead sends source RGB frames to both paths. Neither mode uses masks.
 7. Select strict video-only sampling (experimental, default), or native AV sampling with discarded audio latents for reference-workflow comparison. See the mode table below.
 8. Sample and VAE-decode the video frames. Return the frames, the Qwen-generated image, and the two enhanced prompts. Neither mode decodes or returns audio; native AV still computes audio latents internally.
 
-`change clothes` preserves source identity; `change person` changes the requested identity while preserving source performance. The target appearance comes from the optional reference or the text instruction. A custom instruction can describe either edit in Indonesian or English. Direct RGB control follows the requested workflow; compatibility and motion adherence depend on the selected ControlNet weights. Exact pixel-level/person-motion equality is not guaranteed by a generative model. Full-frame edits can alter backgrounds.
+`change clothes` preserves source identity; `change person` changes the requested identity while preserving source performance. The target appearance comes from the optional reference or the text instruction. A custom instruction can describe either edit in Indonesian or English. Control compatibility and motion adherence depend on the selected mode, detector, and ControlNet weights. Exact pixel-level/person-motion equality is not guaranteed by a generative model. Full-frame edits can alter backgrounds.
 
 ### Comparing against the supplied V2V workflow
 
-The supplied working graph uses source RGB frames directly as Fun ControlNet control, the Qwen result as H3's only reference image, no forced first-frame guide, and `res_multistep` with `simple` scheduling. The all-in-one V2V routing now follows those connections. The raw appearance reference is used only by Qwen. In the MiniMax prompt, `<Picture 1>` means the Qwen-edited image and `<Video 1>` means the source.
+The supplied working graph uses source RGB frames directly as Fun ControlNet control, the Qwen result as H3's only reference image, no forced first-frame guide, and `res_multistep` with `simple` scheduling. The all-in-one V2V `rgb source (legacy)` mode follows those connections. The raw appearance reference is used only by Qwen. In the MiniMax prompt, `<Picture 1>` means the Qwen-edited image and `<Video 1>` means the source.
 
 `h3_sampling_mode` makes a consequential difference:
 
@@ -134,7 +134,7 @@ Use the Qwen **2.1** diffusion model, encoder and VAE together. Older Qwen Image
 
 ## One instruction for Qwen and MiniMax
 
-The V2V `ref_image` input is optional. Leave it disconnected for a text-directed edit such as **"Change her dress to red"**: Qwen receives only the source first frame as `<image1>`. With a reference connected, that image becomes `<image2>`. Both paths send the Qwen result to H3 as `<Picture 1>`, while source frames continue to drive Fun ControlNet. Without a reference, write a specific edit instruction; an empty instruction cannot supply a target outfit/person.
+The V2V `ref_image` input is optional. Leave it disconnected for a text-directed edit such as **"Change her dress to red"**: Qwen receives only the source first frame as `<image1>`. With a reference connected, that image becomes `<image2>`. Both paths send the Qwen result to H3 as `<Picture 1>`, while motion comes from extracted skeletons in pose-only mode, or RGB frames in legacy mode. Without a reference, write a specific edit instruction; an empty instruction cannot supply a target outfit/person.
 
 V2V exposes one `instruction` field. For example: **"Change her clothes to this"**, with the target outfit connected to `ref_image`.
 
@@ -151,9 +151,23 @@ V2V uses dedicated edit-preservation rules, without the general R2V template's f
 
 The prompt enhancer requires working vision support and a matching mmproj. Malformed or incomplete responses stop with an error instead of silently using an unrelated prompt.
 
-### Direct video control
+### Motion control without masking
 
-The source frames are passed directly to Fun ControlNet's `control_video` input. No SDPose checkpoint or pose extraction is required. The implementation uses this control input because native Fun ControlNet reads its separate `source_video` input only with a mask. Direct RGB control has not been GPU-validated here; use compatible weights from your working workflow.
+`motion_control = pose only (DWPose)` is the default for new V2V nodes:
+
+1. The source first frame goes to Qwen as image 1; an optional appearance reference becomes image 2.
+2. DWPose extracts body, hand and face skeletons from every source frame.
+3. Fun ControlNet receives the skeleton images.
+4. H3 receives only the Qwen-edited `<Picture 1>`. No source RGB video is passed to H3's reference-video conditioning.
+5. H3 samples and decodes IMAGE frames as before.
+
+There is **no masking, segmentation, inpainting, compositing, or external pose input** in this mode. The enhancer can inspect source frames as context, but its H3 prompt uses `[reference generation]` and no `<Video N>` labels. Lighting/background appearance is guided by the Qwen image; this does not guarantee exact background, lighting, or motion preservation.
+
+Install [comfyui_controlnet_aux](https://github.com/Fannovel16/comfyui_controlnet_aux) and its requirements in the same environment as ComfyUI, then restart. The registered `DWPreprocessor` is invoked internally. It uses `yolox_l.torchscript.pt` and `dw-ll_ucoco_384_bs5.torchscript.pt`; the auxiliary package downloads missing weights on its first run. No SDPose checkpoint is required. A missing DWPose node or a clip with no detected people produces an explicit error, never an automatic RGB fallback.
+
+`pose_resolution` defaults to **512** and affects detection, not output resolution. `control_strength` still sets Fun ControlNet strength. Pose extraction adds preprocessing time and currently runs for each executed V2V generation; the enhancer/Qwen caches do not cache skeletons. Detection can miss occluded or small subjects.
+
+`motion_control = rgb source (legacy)` retains the earlier source-RGB control and H3 reference-video path. Existing comparison examples explicitly select this mode. For the new path, open [V2V pose only](example_workflows/v2v_pose_only.json) or select `pose only (DWPose)` on your current node. This example uses native AV sampling with discarded audio; that mode still computes audio latents internally.
 
 ## Resolution and aspect ratio
 
@@ -214,7 +228,7 @@ The enhancer key includes the exact image/text request, generation parameters, c
 
 This mainly helps when rerunning with different **H3** sampler, steps, control strength, or model while preprocessing inputs stay identical. Changing the shared seed reruns both stages. First renders and changed inputs still perform their full preprocessing; no GPU speedup factor has been measured. Contiguous source clips also use a tensor view to avoid an unnecessary full-video copy.
 
-The console prints `V2V timing:` per stage and a `V2V timing total:` summary: frame preparation, enhancer, Qwen edit, H3 loading, conditioning, control setup, H3 sampling, and VAE decode. These are wall-clock measurements without forced GPU synchronization, so asynchronous work may cross stage boundaries. Sampling includes lazy Fun ControlNet encoding/loading. The total covers this node, not video loading or final video encoding.
+The console prints `V2V timing:` per stage and a `V2V timing total:` summary: frame preparation, enhancer, Qwen edit, pose extraction, H3 loading, conditioning, control setup, H3 sampling, and VAE decode. These are wall-clock measurements without forced GPU synchronization, so asynchronous work may cross stage boundaries. Sampling includes lazy Fun ControlNet encoding/loading. The total covers this node, not video loading or final video encoding.
 
 Keep the working model, scheduler, steps and resolution for the first timing comparison. If a managed llama.cpp server shares the generation GPU, `unload_llm_after_prompt=true` stops that server after enhancement and releases its allocation before diffusion; the next cache hit avoids restarting it. This setting does not stop an external server. Share the timing summary, GPU/VRAM, and offloading log before deciding on attention, quantization, or model changes.
 
@@ -222,7 +236,7 @@ Keep the working model, scheduler, steps and resolution for the first timing com
 
 API signatures and model filenames were checked against current official ComfyUI and Qwen sources. Workflow graph consistency is checked by `tools/check_workflows.cjs`. Unit tests cover canvas sizing, temporal sampling, first-frame prompt policy, audio-tag rejection and the zero-audio-token wrapper contract: `python -m unittest discover -s tests -v`.
 
-Python syntax checks, all 36 unit tests (including discovery, prompt-format regressions, and native/strict V2V routing), and the workflow graph checks pass. End-to-end generation has **not** been run because no ComfyUI GPU runtime is available here. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
+Python syntax checks, all 42 unit tests (including discovery, prompt-format regressions, and native/strict V2V routing), and the workflow graph checks pass. End-to-end generation has **not** been run because no ComfyUI GPU runtime is available here. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
 
 The example workflows were built using public official templates as integration references. They have not been validated through end-to-end generation.
 

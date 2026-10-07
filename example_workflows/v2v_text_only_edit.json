@@ -178,7 +178,9 @@
         "(none)",
         1,
         "strict video-only (experimental)",
-        true
+        true,
+        "rgb source (legacy)",
+        512
       ],
       "widgets_values_named": {
         "h3_model": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
@@ -216,7 +218,9 @@
         "qwen_lora_name": "(none)",
         "qwen_lora_strength": 1,
         "h3_sampling_mode": "strict video-only (experimental)",
-        "reuse_preprocessing": true
+        "reuse_preprocessing": true,
+        "motion_control": "rgb source (legacy)",
+        "pose_resolution": 512
       }
     },
     {

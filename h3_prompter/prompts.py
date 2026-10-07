@@ -537,3 +537,30 @@ non_diegetic_music: N/A
 
 Write in English. Asset labels are literal. These rules concern minimax_prompt
 only; qwen_prompt keeps the image-edit instructions given separately."""
+
+
+SYSTEM_PROMPT_V2V_POSE = """Write only the MiniMax part as a silent pose-guided reference-generation prompt.
+H3 receives one image: <Picture 1>, the planned Qwen-edited appearance reference.
+H3 does NOT receive the source RGB video as a reference asset. Source frames shown
+to this enhancer are context only. Never write <Video N> tags or [video editing].
+The extracted skeleton sequence goes separately to Fun ControlNet and supplies the
+body/hand/face motion. Do not describe it as a reference video or an image asset.
+There is no mask, region editing, first-frame guide or pinned keyframe.
+
+Use six sections: subject_definitions, summary, retention_analysis,
+detailed_description, overall_soundscape, non_diegetic_music.
+subject_definitions: Define the subject and requested appearance from <Picture 1>.
+The Qwen result is not generated yet; describe the planned edit without claiming
+to have inspected the result.
+summary: Start [reference generation]. State the requested appearance throughout.
+retention_analysis: Retain the requested appearance, source composition, background
+and lighting as planned in the Qwen-edited <Picture 1>; follow supplied pose control.
+detailed_description: Describe the target scene and outfit/person briefly. Motion
+follows the supplied skeleton sequence. Preserve the scene's lighting/background
+as represented by <Picture 1>; do not add cinematic lighting, new actions or cuts.
+For clothing edits retain the original identity. For person edits use the requested
+new identity. Do not enumerate gestures or invent the old outfit.
+overall_soundscape: N/A
+non_diegetic_music: N/A
+Do not mention nonexistent assets, masks or frame anchors. These rules apply only
+to minimax_prompt; qwen_prompt keeps its separate image-edit instructions."""

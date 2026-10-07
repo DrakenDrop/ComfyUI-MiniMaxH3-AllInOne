@@ -223,6 +223,40 @@ class PreprocessingTests(unittest.TestCase):
         self.assertEqual(self.enhance(), (qwen, minimax))
         self.assertEqual(self.request.call_count, 2)
 
+
+    def test_pose_prompt_mode_uses_only_qwen_h3_image_and_invalidates_rgb_cache(self):
+        self.enhance()
+        for style in ("simple", "official"):
+            for has_reference in (True, False):
+                with self.subTest(style=style, has_reference=has_reference):
+                    qwen = "Edit <image1> using <image2>." if has_reference else "Make the dress in <image1> red."
+                    text = "[reference generation] The person wears the outfit in <Picture 1> and follows the skeleton control."
+                    mini = text if style == "simple" else dict(zip(fmt.FIELDS, (
+                        "<Picture 1> is the edited appearance.", "[reference generation] Animate the edited person.",
+                        "<Picture 1>: fully_preserved - outfit, background and lighting.",
+                        text, "N/A", "N/A")))
+                    self.request.return_value = (json.dumps({"qwen_prompt": qwen, "minimax_prompt": mini}), None, None)
+                    before = self.request.call_count
+                    q, m = self.enhance(motion_control="pose only (DWPose)",
+                                        reference=self.reference if has_reference else None,
+                                        minimax_prompt_style=style)
+                    self.assertEqual(self.request.call_count, before + 1)
+                    self.assertEqual(q, qwen)
+                    self.assertNotIn("<Video", m)
+                    system = self.request.call_args.args[2]["content"]
+                    self.assertIn("No RGB video is supplied to H3", system)
+                    self.assertNotIn("Use [video editing]", system)
+                    parts = self.request.call_args.args[3]["content"]
+                    self.assertFalse(any("<Video 1>" in p.get("text", "") for p in parts))
+                    bad = {"qwen_prompt": qwen, "minimax_prompt":
+                           text + " Follow <Video 1>."}
+                    repaired, result = fmt.parse_edit_response_with_repair(
+                        json.dumps(bad), "simple",
+                        lambda reason: json.dumps({"qwen_prompt": qwen, "minimax_prompt": text}),
+                        has_reference=has_reference, has_video_reference=False)
+                    self.assertEqual(repaired, qwen)
+                    self.assertNotIn("<Video", result)
+
     def test_split_gguf_stamp_tracks_all_shards(self):
         first = self.root / "model-00001-of-00002.gguf"
         second = self.root / "model-00002-of-00002.gguf"
