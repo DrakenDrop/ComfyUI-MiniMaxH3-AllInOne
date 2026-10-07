@@ -29,8 +29,10 @@ for (const file of fs.readdirSync(path.join(root, 'example_workflows')).filter(f
     assert(!pipeline.inputs.some(i => i.type === 'AUDIO'));
     assert(!pipeline.outputs.some(o => o.type === 'AUDIO'));
     assert(!('h3_audio_vae' in pipeline.widgets_values_named));
-    assert(pipeline.inputs.some(i => i.name === 'ref_video' && i.type === 'VIDEO'));
-    assert(pipeline.inputs.some(i => i.name === 'ref_image'));
+    assert(pipeline.inputs.some(i => i.name === 'source_video' && i.type === 'VIDEO'));
+    assert(pipeline.inputs.some(i => i.name === 'ref_image' && i.type === 'IMAGE'));
+    assert.equal(pipeline.inputs.length, 2);
+    assert(pipeline.inputs.every(i => i.link != null), 'both V2V media inputs must be connected');
     assert(!graph.nodes.some(n => /Audio|Sampler|Loader|Components/.test(n.type)));
   } else {
     assert(pipeline.inputs.some(i => i.name === 'ref_audio' && i.type === 'AUDIO'));
@@ -42,7 +44,8 @@ const compact = fs.readFileSync(path.join(root, 'nodes_compact.py'), 'utf8');
 assert(compact.includes('audio=None'));
 assert(compact.includes('silent=True'));
 assert(compact.includes('image=source'));
-assert(compact.includes('qwen_images = [source[:1]]'));
+assert(compact.includes('qwen_images = [source[:1], ref_image[:1]]'));
+assert(!/external_pose|edit_mask|edited_first_frame/.test(compact));
 assert(compact.includes('MiniMaxH3AddGuide.execute('));
 const vo = fs.readFileSync(path.join(root, 'h3_prompter/video_only.py'), 'utf8');
 assert(vo.includes('x[1][..., :0]'));
