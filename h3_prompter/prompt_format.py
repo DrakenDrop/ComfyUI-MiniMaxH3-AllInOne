@@ -88,6 +88,16 @@ def apply_policy(prompt, first_frame=False, silent=False, style="official"):
     return "\n\n".join(f"{f}:\n{sections[f]}" for f in FIELDS)
 
 
+class V2VPromptError(ValueError):
+    """A valid Qwen response contains a MiniMax prompt that needs correction."""
+
+
+def _normalize_h3_labels(text):
+    # Only canonicalize explicit H3 tags. Never infer missing assets or map Qwen labels.
+    return re.sub(r"<\s*(picture|video|subject)\s*(\d+)\s*>",
+                  lambda m: f"<{m[1].title()} {int(m[2])}>", text, flags=re.I)
+
+
 def parse_edit_response(content, style="official", has_reference=True):
     try:
         result = json.loads(strip_fence(content))
@@ -104,18 +114,28 @@ def parse_edit_response(content, style="official", has_reference=True):
     allowed = {"1", "2"} if has_reference else {"1"}
     if any(label not in allowed for label in re.findall(r"<image\s*(\d+)>", qwen, re.I)):
         raise ValueError("Qwen prompt references an image that is not connected.")
-    minimax = apply_policy(result["minimax_prompt"], silent=True, style=style)
+    try:
+        minimax = apply_policy(result["minimax_prompt"], silent=True, style=style)
+    except ValueError as exc:
+        raise V2VPromptError(str(exc)) from exc
+    minimax = _normalize_h3_labels(minimax)
     if re.search(r"<image\s*\d+>", minimax, re.I):
-        raise ValueError("MiniMax prompt contains Qwen image labels.")
-    if not all(tag in minimax for tag in ("<Video 1>", "<Picture 1>")):
-        raise ValueError("MiniMax prompt must reference <Video 1> and the Qwen-edited <Picture 1>.")
+        raise V2VPromptError("MiniMax prompt contains Qwen image labels. H3 uses <Video 1> and <Picture 1>.")
+    missing = [tag for tag in ("<Video 1>", "<Picture 1>") if tag not in minimax]
+    if missing:
+        raise V2VPromptError(
+            "MiniMax prompt is missing " + ", ".join(missing) + ". "
+            "<Video 1> is the source video; <Picture 1> is the Qwen-edited appearance "
+            "reference, including when no optional ref_image is connected. Describe their roles.")
     if any(n != "1" for n in re.findall(r"<Picture\s+(\d+)>", minimax, re.I)):
-        raise ValueError("MiniMax receives only one picture: the Qwen-edited <Picture 1>.")
+        raise V2VPromptError("MiniMax receives only one picture: the Qwen-edited <Picture 1>.")
+    if any(n != "1" for n in re.findall(r"<Video\s+(\d+)>", minimax, re.I)):
+        raise V2VPromptError("MiniMax receives only one video: source <Video 1>.")
     _check_v2v_anchor(minimax)
     return qwen.strip(), minimax
 
 
-class V2VAnchorError(ValueError):
+class V2VAnchorError(V2VPromptError):
     """An enhancer assigned a frame anchor which this V2V pipeline does not supply."""
 
 
@@ -133,11 +153,22 @@ def _check_v2v_anchor(prompt):
 
 
 def parse_edit_response_with_repair(content, style, repair, has_reference=True):
-    """Retry unsupported frame-anchor claims once, preserving the original Qwen prompt."""
+    """Repair an invalid MiniMax prompt once, preserving the already validated Qwen prompt."""
     try:
         return parse_edit_response(content, style=style, has_reference=has_reference)
-    except V2VAnchorError as exc:
+    except V2VPromptError as exc:
         original_qwen = json.loads(strip_fence(content))["qwen_prompt"].strip()
         corrected = repair(str(exc))
-        _, minimax = parse_edit_response(corrected, style=style, has_reference=has_reference)
+        # The retry edits MiniMax only: validate with the original, already valid Qwen text.
+        try:
+            repaired = json.loads(strip_fence(corrected))
+        except (TypeError, AttributeError, json.JSONDecodeError) as exc:
+            raise ValueError("MiniMax prompt repair returned incomplete JSON after one retry.") from exc
+        if not isinstance(repaired, dict) or set(repaired) != {"qwen_prompt", "minimax_prompt"}:
+            raise ValueError("MiniMax prompt repair must return both prompt fields after one retry.")
+        repaired["qwen_prompt"] = original_qwen
+        try:
+            _, minimax = parse_edit_response(json.dumps(repaired), style=style, has_reference=has_reference)
+        except V2VPromptError as exc:
+            raise type(exc)("MiniMax prompt is still invalid after one repair attempt: " + str(exc)) from exc
         return original_qwen, minimax

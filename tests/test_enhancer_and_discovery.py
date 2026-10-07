@@ -104,6 +104,71 @@ class PromptRegressionTests(unittest.TestCase):
         anchored = fmt.apply_policy(SECTIONS, first_frame=True)
         self.assertIn("begins from <Picture 1>", anchored)
 
+
+    def test_missing_h3_labels_repair_in_both_styles_with_optional_reference(self):
+        from unittest.mock import Mock
+        for style in ("simple", "official"):
+            for has_reference in (True, False):
+                for missing in ("<Picture 1>", "<Video 1>", "both"):
+                    with self.subTest(style=style, has_reference=has_reference, missing=missing):
+                        qwen = "Edit <image1> using <image2>." if has_reference else "Make the dress in <image1> red."
+                        good_text = "Edit <Video 1> using the appearance in <Picture 1>."
+                        labels = ("<Video 1>", "<Picture 1>") if missing == "both" else (missing,)
+                        good = good_text if style == "simple" else dict(SECTIONS)
+                        bad = good_text if style == "simple" else dict(SECTIONS)
+                        for label in labels:
+                            if isinstance(bad, str):
+                                bad = bad.replace(label, "the supplied asset")
+                            else:
+                                bad = {k: v.replace(label, "the supplied asset") for k, v in bad.items()}
+                        repair = Mock(return_value=json.dumps({"qwen_prompt": "do not use this changed text",
+                                                               "minimax_prompt": good}))
+                        q, m = fmt.parse_edit_response_with_repair(
+                            json.dumps({"qwen_prompt": qwen, "minimax_prompt": bad}),
+                            style, repair, has_reference=has_reference)
+                        self.assertEqual(q, qwen)
+                        self.assertIn("<Video 1>", m)
+                        self.assertIn("<Picture 1>", m)
+                        self.assertIn("missing", repair.call_args.args[0])
+                        repair.assert_called_once()
+
+    def test_h3_tag_spelling_normalizes_without_inventing_assets(self):
+        from unittest.mock import Mock
+        repair = Mock()
+        text = "Edit < video1 > using <PICTURE  1 > for <subject1>."
+        _, m = fmt.parse_edit_response_with_repair(json.dumps({
+            "qwen_prompt": "Edit <image1> using <image2>.", "minimax_prompt": text}),
+            "simple", repair)
+        self.assertIn("<Video 1>", m)
+        self.assertIn("<Picture 1>", m)
+        self.assertIn("<Subject 1>", m)
+        repair.assert_not_called()
+        for bad in ("Edit the source video using the edited image.",
+                    "Edit <Video 1> using <Picture 2>.",
+                    "Edit <Video 1> and <Video 2> using <Picture 1>."):
+            with self.subTest(bad=bad), self.assertRaises(fmt.V2VPromptError):
+                fmt.parse_edit_response(json.dumps({
+                    "qwen_prompt": "Edit <image1> using <image2>.", "minimax_prompt": bad}), style="simple")
+
+    def test_h3_format_repair_is_bounded_and_does_not_retry_invalid_qwen(self):
+        from unittest.mock import Mock
+        good = json.dumps({"qwen_prompt": "Edit <image1> using <image2>.", "minimax_prompt": SECTIONS})
+        bad = json.dumps({"qwen_prompt": "Edit <image1> using <image2>.", "minimax_prompt":
+                         {k: v for k, v in SECTIONS.items() if k != "summary"}})
+        repair = Mock(return_value=good)
+        self.assertEqual(fmt.parse_edit_response_with_repair(bad, "official", repair)[1], PLAIN)
+        repair.assert_called_once()
+        repair.reset_mock()
+        repair.return_value = bad
+        with self.assertRaisesRegex(fmt.V2VPromptError, "after one repair attempt"):
+            fmt.parse_edit_response_with_repair(bad, "official", repair)
+        repair.assert_called_once()
+        repair.reset_mock()
+        with self.assertRaises(ValueError):
+            fmt.parse_edit_response_with_repair(
+                json.dumps({"qwen_prompt": "", "minimax_prompt": SECTIONS}), "official", repair)
+        repair.assert_not_called()
+
 class DiscoveryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

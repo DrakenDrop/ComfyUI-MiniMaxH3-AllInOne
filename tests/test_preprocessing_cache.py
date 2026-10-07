@@ -207,6 +207,22 @@ class PreprocessingTests(unittest.TestCase):
                     json.dumps(anchored), style, lambda reason: response, has_reference=False)
                 self.assertEqual(repaired, qwen)
 
+
+    def test_missing_label_repair_happens_before_caching_and_server_stop(self):
+        bad = json.dumps({"qwen_prompt": "Edit <image1> using <image2>.",
+                          "minimax_prompt": "Change the dress in <Video 1> to red."})
+        good = json.dumps({"qwen_prompt": "Changed Qwen text must not replace the original.",
+                           "minimax_prompt": "Edit <Video 1> using the appearance in <Picture 1>."})
+        self.request.side_effect = [(bad, None, None), (good, None, None)]
+        qwen, minimax = self.enhance()
+        self.assertEqual(qwen, "Edit <image1> using <image2>.")
+        self.assertIn("<Picture 1>", minimax)
+        self.assertEqual(self.request.call_count, 2)
+        self.server.ensure.assert_called_once()
+        self.server.stop.assert_called_once()
+        self.assertEqual(self.enhance(), (qwen, minimax))
+        self.assertEqual(self.request.call_count, 2)
+
     def test_split_gguf_stamp_tracks_all_shards(self):
         first = self.root / "model-00001-of-00002.gguf"
         second = self.root / "model-00002-of-00002.gguf"

@@ -340,10 +340,12 @@ class MiniMaxH3V2VGenerate(_Pipeline):
             content = request(parts)
 
             def repair(reason):
-                lc.log("V2V enhancer returned an unsupported frame anchor; repairing MiniMax prompt once.")
+                lc.log(f"V2V enhancer validation: {reason} Repairing MiniMax prompt once.")
                 return request(parts + [{"type": "text", "text":
                     "Correct only minimax_prompt in the previous response. " + reason +
-                    " Preserve qwen_prompt exactly. Return the complete JSON envelope. "
+                    " Preserve qwen_prompt exactly. H3 must reference <Video 1> as the source and "
+                    "<Picture 1> as the Qwen-edited appearance reference, even without an optional reference image. "
+                    "Do not add other assets or frame anchors. Return the complete JSON envelope. "
                     "Previous response:\n" + content}])
 
             qwen, minimax = parse_edit_response_with_repair(content, style, repair, has_reference=has_reference)
