@@ -5,7 +5,7 @@ All-in-one ComfyUI nodes for **MiniMax H3 reference-to-video (R2V)** and **exper
 ## Features
 
 - R2V with one reference image and one reference audio clip.
-- V2V with a source video and one required appearance reference image.
+- V2V with source video frames as an IMAGE batch and one required appearance reference image.
 - Qwen Image 2.1 editing of the source video's first frame.
 - Pose guidance with H3-compatible Fun ControlNet Union weights.
 - Local llama.cpp prompting with automatic GGUF discovery in `ComfyUI/models/LLM/`.
@@ -13,7 +13,7 @@ All-in-one ComfyUI nodes for **MiniMax H3 reference-to-video (R2V)** and **exper
 - 360p, 480p, and native 768p resolution presets.
 - Reference-based, standard, and custom aspect ratios.
 - An R2V option to use reference image 1 as the first frame.
-- Primary decoded IMAGE output for Preview Image or Video Combine, plus VIDEO output for Save Video.
+- V2V: a single decoded IMAGE output for Preview Image or Video Combine. R2V also provides VIDEO and AUDIO.
 
 **Status:** End-to-end GPU validation is pending. Silent V2V denoising is experimental, and exact motion reproduction is not guaranteed.
 
@@ -30,6 +30,8 @@ python -m pip install -r requirements.txt
 
 Use the Python environment that runs ComfyUI. For a portable installation, use its bundled Python executable.
 
+The V2V examples use [ComfyUI-VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite) to load video frames as IMAGE batches.
+
 Configure llama.cpp and install the required models as described below, restart ComfyUI, then open an example workflow. Replace placeholder model filenames with the models installed on your machine.
 
 ## Example workflows
@@ -39,7 +41,7 @@ Configure llama.cpp and install the required models as described below, restart 
 | [R2V image and audio](example_workflows/r2v_image_audio.json) | Reference image and audio | Video with audio |
 | [V2V with appearance reference](example_workflows/v2v_qwen_pose_silent.json) | Source video and reference image | Silent edited video |
 
-Each workflow uses standard media loaders, one generation node, and Save Video. Model and sampler settings are configured inside the generation node.
+R2V uses standard media loaders and Save Video. V2V uses VHS Load Video (IMAGE output), Load Image, one generation node, and VHS Video Combine or Preview Image. Model and sampler settings are configured inside the generation node.
 
 ## Requirements and configuration
 
@@ -47,7 +49,7 @@ Each workflow uses standard media loaders, one generation node, and Save Video. 
 2. Use a current ComfyUI with `TextEncodeQwenImage21`, `SDPoseKeypointExtractor`, `MiniMaxH3FunControlNetApply`, and `MiniMaxH3AddGuide` (Qwen Image 2.1 support requires 0.37.0 or newer).
 3. Install requirements using the same Python environment as ComfyUI: `python -m pip install -r requirements.txt`.
 4. Install llama.cpp `llama-server` and set `llama_server_path` in `config.json` (copy `config.example.json`). Put a vision GGUF and its matching mmproj in `ComfyUI/models/LLM/`. Subfolders and split GGUF models are scanned. The model choice `(llama-server yang sudah jalan)` uses an existing server; it does not switch that server's model.
-5. Restart ComfyUI and open one of the workflows in `example_workflows/`. Select installed model filenames in the main node; placeholder filenames in the workflows are examples.
+5. The V2V examples require ComfyUI-VideoHelperSuite for the video loader. Restart ComfyUI and open one of the workflows in `example_workflows/`. Select installed model filenames in the main node; placeholder filenames in the workflows are examples.
 
 ## Decoded IMAGE output
 
@@ -55,11 +57,11 @@ Select **MiniMax H3 R2V Generate (Sample + VAE Decode)** or **MiniMax H3 V2V Gen
 
 The primary `images` output is an **IMAGE batch of generated frames after the internal sampler and VAE Decode**. Connect it directly to **Preview Image** or **VHS Video Combine**. For Video Combine, set the frame rate to **24 FPS**; R2V can also supply its `audio` output. V2V has no audio output.
 
-The second output, `video`, remains available for **Save Video**. No external sampler or VAE Decode node is needed.
+**V2V exposes only one output: `images` (IMAGE).** Connect it to VHS Video Combine at 24 FPS to save a silent video, or to Preview Image. Width, height, pose, edited reference, prompt, and frame-count debug sockets are not exposed. R2V also provides VIDEO and AUDIO outputs. No external sampler or VAE Decode node is needed.
 
 Nodes labeled **Conditioning (Requires Sampler)** are separate advanced nodes and return intermediate model/conditioning/latent data.
 
-**Updating existing workflows:** the first two outputs have changed order to `images`, then `video`. Reconnect these sockets on existing generation nodes, or load the updated examples. The node class IDs and input settings remain the same.
+**Updating existing workflows:** recreate the V2V node or load an updated example to remove obsolete sockets. V2V now has two IMAGE inputs and one IMAGE output. R2V keeps `images` first and `video` second.
 
 Try [V2V decoded IMAGE frames](example_workflows/v2v_decoded_images.json): source video + reference image → generation → Preview Image.
 
@@ -77,29 +79,31 @@ The node loads H3 ref2va, the H3 text encoder, video VAE and audio VAE. It write
 
 ## V2V Edit
 
-`Load Image + Load Video -> MiniMax H3 V2V Edit -> Save Video`
+`Load Image + Load Video (IMAGE output) -> MiniMax H3 V2V Edit -> IMAGE output`
 
 Exactly two media inputs are required:
 
 | Input | Internal use |
 |---|---|
-| `source_video` (VIDEO) | Source frames, automatic pose extraction and Fun ControlNet motion guidance |
+| `source_video` (IMAGE batch) | Source frames, automatic pose extraction and Fun ControlNet motion guidance |
 | `ref_image` (IMAGE) | Target clothing/person reference supplied as Qwen Image Edit's second image |
+
+The `source_video` socket accepts an **IMAGE batch**, matching native H3's `ref_video` input. Connect the **IMAGE output of VHS Load Video**. Set `force_rate = 24`, `select_every_nth = 1`, and leave the loader's VAE input disconnected. IMAGE batches contain no FPS metadata, so the node interprets the frames at **24 FPS**. A batch loaded at a different FPS would change timing; resample in the video loader first.
 
 Qwen's first image is extracted automatically from source frame 0. Pose extraction, Qwen editing, Fun ControlNet, H3 sampling, and VAE Decode run inside the node. There are no external pose, edit mask, or pre-edited-frame input sockets. The source audio is ignored; the node has no audio input, audio VAE loader, audio decode, or audio output.
 
-After updating, recreate the V2V node or load the updated example. The source input is now named `source_video`, and both media inputs must be connected. The old `v2v_video_only_input.json` filename is retained for existing download links but now also requires a reference image.
+After updating, recreate the V2V node or load the updated example. The `source_video` socket now uses IMAGE rather than VIDEO; reconnect the video loader\'s IMAGE output. Both media inputs must be connected. The old `v2v_video_only_input.json` filename is retained for existing download links but now also requires a reference image.
 
 Internally:
 
-1. Select a segment and resample to 24 FPS. Snap DOWN to a valid `17k+5` frame count, capped at 362 frames. The end can be shortened by up to 16 frames (0.67 seconds); no repeated last frames are added. This preserves the sampled source timing instead of stretching it.
+1. Read the supplied 24 FPS IMAGE batch and select a segment. Snap DOWN to a valid `17k+5` frame count, capped at 362 frames. The end can be shortened by up to 16 frames (0.67 seconds); no repeated last frames are added. This preserves the sampled source timing instead of stretching it.
 2. Resize/crop the source to the selected canvas. `same as reference` follows the **source video's** aspect ratio in V2V, and the image's aspect ratio in R2V.
 3. Extract body, hands, face and feet pose automatically from the source video using the selected native SDPose checkpoint. This uses full-frame single-person detection; multi-person videos may need a different workflow.
 4. Qwen Image 2.1 edits source frame 0 as Image 1, using the connected reference image as Image 2.
 5. llama.cpp writes an H3 `[video editing]` prompt, using source motion/camera and target appearance. The edited frame is anchored at frame 0.
 6. Load the H3 Fun ControlNet Union patch and apply the pose extracted from the source video as motion control.
 7. Apply the **experimental video-only wrapper**: target audio is a zero-length token stream inside the H3 transformer. The sampler carries a zero audio placeholder only for native AV-container compatibility; its noise generator produces randomness only for video. Nothing is decoded or exported as audio.
-8. Sample and VAE-decode the generated frames. Return the decoded IMAGE batch and a VIDEO object with `audio=None`.
+8. Sample and VAE-decode the generated frames. Return a single IMAGE batch; no audio is generated, decoded, or returned.
 
 `change clothes` preserves source identity and takes the reference outfit. `change person` takes target identity and preserves source performance. A custom instruction can describe either edit in Indonesian or English. Pose control improves motion adherence; exact pixel-level/person-motion equality is not guaranteed by a generative model. Full-frame edits can alter backgrounds.
 

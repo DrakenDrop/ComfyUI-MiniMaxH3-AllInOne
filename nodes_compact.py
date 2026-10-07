@@ -201,13 +201,13 @@ class MiniMaxH3R2VGenerate(_Pipeline):
 class MiniMaxH3V2VGenerate(_Pipeline):
     CATEGORY = CATEGORY
     FUNCTION = "generate"
-    RETURN_TYPES = ("IMAGE", "VIDEO", "STRING", "IMAGE", "IMAGE", "INT", "INT", "INT")
-    RETURN_NAMES = ("images", "video", "prompt", "edited_reference", "control_pose", "width", "height", "frame_count")
-    DESCRIPTION = "Source VIDEO + reference IMAGE -> Qwen Image 2.1 first-frame edit -> pose/Fun ControlNet -> H3 sampler -> VAE Decode IMAGE frames and silent VIDEO. Video-only denoising is experimental."
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("images",)
+    DESCRIPTION = "Source IMAGE batch (24 FPS) + reference IMAGE -> Qwen Image 2.1 first-frame edit -> pose/Fun ControlNet -> H3 sampler -> VAE Decode IMAGE frames. No audio generation or debug outputs. Video-only denoising is experimental."
 
     @classmethod
     def INPUT_TYPES(cls):
-        required = {"source_video": ("VIDEO",), "ref_image": ("IMAGE",), **common_inputs()}
+        required = {"source_video": ("IMAGE", {"tooltip": "Source video frames as an IMAGE batch at 24 FPS, matching the native H3 ref_video input. Connect a video loader IMAGE output."}), "ref_image": ("IMAGE",), **common_inputs()}
         required.update({
             "fun_controlnet": (choices("model_patches", ["minimax_h3_fun"]),),
             "pose_checkpoint": (choices("checkpoints", ["sdpose"]),),
@@ -233,12 +233,14 @@ class MiniMaxH3V2VGenerate(_Pipeline):
                  **kw):
         import torch
         import nodes
-        from comfy_extras import nodes_minimax_h3 as h3, nodes_video, nodes_sdpose
+        from comfy_extras import nodes_minimax_h3 as h3, nodes_sdpose
         from .nodes_h3qwen import MiniMaxH3QwenKeyframeEdit
 
-        components = source_video.get_components()
-        original = components.images[..., :3]
-        fps = float(components.frame_rate)
+        if source_video.ndim != 4 or source_video.shape[-1] < 3 or len(source_video) == 0:
+            raise ValueError("source_video must be a non-empty IMAGE batch [frames, height, width, RGB] at 24 FPS")
+        original = source_video[..., :3]
+        # IMAGE batches carry no timing metadata. Match native H3 ref_video's 24 FPS contract.
+        fps = 24.0
         frames, indices = geometry.video_timeline(len(original), fps, start_seconds, max_seconds)
         w, h = geometry.canvas(kw["resolution"], kw["aspect_ratio"], original.shape[2], original.shape[1], kw["custom_aspect"])
         index_tensor = torch.tensor(indices, device=original.device, dtype=torch.long)
@@ -292,8 +294,7 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         model = patch_video_only(model)
         images, _ = self._sample(model, positive, latent, vae, kw["seed"], kw["steps"], kw["sampler_name"], kw["scheduler"], silent=True)
         images = images[:frames]
-        video = args(nodes_video.CreateVideo.execute(images=images, fps=24.0, audio=None))[0]
-        return images, video, prompt, first, pose, w, h, frames
+        return (images,)
 
 
 NODE_CLASS_MAPPINGS = {"MiniMaxH3R2VGenerate": MiniMaxH3R2VGenerate, "MiniMaxH3V2VGenerate": MiniMaxH3V2VGenerate}
