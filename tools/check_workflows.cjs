@@ -45,7 +45,8 @@ for (const file of fs.readdirSync(path.join(root, 'example_workflows')).filter(f
     assert.equal(loader.widgets_values_named.force_rate, 24);
     assert.equal(loader.widgets_values_named.select_every_nth, 1);
     assert.equal(loader.inputs.find(i => i.name === 'vae').link, null);
-    assert(pipeline.inputs.every(i => i.link != null), 'both V2V media inputs must be connected');
+    assert(pipeline.inputs.find(i => i.name === 'source_video').link != null, 'source video must be connected');
+    assert.equal(pipeline.inputs.find(i => i.name === 'ref_image').shape, 7, 'reference input is optional');
     assert(!graph.nodes.some(n => /Audio|Sampler|Loader|Components/.test(n.type)));
   } else {
     assert.equal(pipeline.outputs[1].type, 'VIDEO');
@@ -60,7 +61,7 @@ assert(compact.includes('return images, qwen_image, prompt, qwen_prompt'));
 assert(compact.includes('silent=strict_video_only, timer=timer'));
 assert(compact.includes('control_video=source'));
 assert(!compact.includes('nodes_sdpose'));
-assert(compact.includes('qwen_images = [source[:1], reference[:1]]'));
+assert(compact.includes('qwen_images = [source[:1]]'));
 assert(compact.includes('ref_images={"ref_image_0": qwen_image}'));
 assert(!compact.slice(compact.indexOf('class MiniMaxH3V2VGenerate')).includes('MiniMaxH3AddGuide.execute'));
 assert(!/external_pose|edit_mask|edited_first_frame/.test(compact));

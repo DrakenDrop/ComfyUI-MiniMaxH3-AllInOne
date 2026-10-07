@@ -146,7 +146,8 @@
         {
           "name": "ref_image",
           "type": "IMAGE",
-          "link": 1
+          "link": 1,
+          "shape": 7
         }
       ],
       "outputs": [

@@ -208,7 +208,7 @@ class MiniMaxH3V2VGenerate(_Pipeline):
     FUNCTION = "generate"
     RETURN_TYPES = ("IMAGE", "IMAGE", "STRING", "STRING")
     RETURN_NAMES = ("images", "qwen_image", "minimax_prompt", "qwen_prompt")
-    DESCRIPTION = "Source IMAGE batch (24 FPS) + reference IMAGE -> Qwen Image 2.1 first-frame edit -> Fun ControlNet -> H3 sampler -> VAE Decode IMAGE frames. Also returns the decoded Qwen edit before H3 resizing as qwen_image and both enhanced prompts. Silent IMAGE outputs. Strict video-only is experimental; native AV mode computes audio latents internally and discards them."
+    DESCRIPTION = "Source IMAGE batch (24 FPS) + optional reference IMAGE -> Qwen Image 2.1 first-frame edit -> Fun ControlNet -> H3 sampler -> VAE Decode IMAGE frames. Also returns the decoded Qwen edit before H3 resizing as qwen_image and both enhanced prompts. Silent IMAGE outputs. Strict video-only is experimental; native AV mode computes audio latents internally and discards them."
 
 
     def _enhance_edit(self, source, reference, instruction, frames, **kw):
@@ -226,14 +226,23 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         style = kw.get("minimax_prompt_style", "official")
         if style not in ("official", "simple"):
             raise ValueError(f"Unknown MiniMax prompt style: {style}")
+        has_reference = reference is not None
+        qwen_roles = (
+            "For qwen_prompt use <image1> for the source first frame (the canvas), and <image2> "
+            "for the supplied appearance reference. "
+            if has_reference else
+            "For qwen_prompt use only <image1>, the source first frame (the canvas). "
+            "No additional reference image is supplied. Apply the user's text instruction to <image1>. "
+            "Do not mention <image2> or invent a supplied target image. ")
+        qwen_labels = ("qwen_prompt uses both <image1> and <image2>. " if has_reference else
+                       "qwen_prompt uses only <image1>. ")
         # Editing rules adapted from Qwen's official system_prompt_edit.txt.
         system = (
             "Prepare coordinated prompts for a silent video edit from ONE user instruction. "
             "Return a JSON object with exactly two fields: qwen_prompt and minimax_prompt. "
-            "For qwen_prompt use <image1> for the source first frame (the canvas), and <image2> "
-            "for the supplied appearance reference. State the requested operation clearly, "
+            + qwen_roles + "State the requested operation clearly, "
             "identify each image's role, and preserve attributes the user did not request to edit. "
-            "Base details on visible evidence; do not invent garment colors, patterns or identity. "
+            "Base target details on the user instruction and any supplied appearance reference; do not invent unrequested garment colors, patterns or identity. "
             "For a clothing change transfer clothing only, preserving the source person's face, "
             "body, pose, accessories not targeted by the request, camera, light and background. "
             "For a person change preserve source pose, composition and background while transferring "
@@ -241,7 +250,7 @@ class MiniMaxH3V2VGenerate(_Pipeline):
             "Do not include video motion instructions in qwen_prompt. "
             "For minimax_prompt follow the H3 format below. Its asset labels DIFFER from Qwen: "
             "<Video 1> is the source performance; <Picture 1> will be the Qwen-edited image. "
-            "The supplied raw appearance reference is used by Qwen only, not supplied directly to H3. "
+            "Any optional raw appearance reference is used by Qwen only, not supplied directly to H3. "
             "Picture 1 has not been generated yet: describe its intended edited appearance, not invented observations. "
             "Picture 1 is an appearance reference, not a pinned first-frame guide. Do not mention Picture 2. "
             "The target appearance must exist from frame 0 throughout the clip, not transform gradually. "
@@ -265,16 +274,17 @@ class MiniMaxH3V2VGenerate(_Pipeline):
                 "minimax_prompt (an object with six non-empty string fields: "
                 + ", ".join(prompts.R2V_FIELDS) + "). "
                 "Set overall_soundscape and non_diegetic_music to N/A. "
-                "qwen_prompt uses both <image1> and <image2>. No Markdown fences.")
+                + qwen_labels + "No Markdown fences.")
         else:
             system += (
                 "\n\nResponse envelope: output only JSON with two strings: qwen_prompt and minimax_prompt. "
                 "minimax_prompt is concise prose, without the six official section headings. "
-                "qwen_prompt uses both <image1> and <image2>. No Markdown fences.")
+                + qwen_labels + "No Markdown fences.")
         parts = [{"type": "text", "text": (
             f"User instruction: {instruction}\nEdit mode: {kw['edit_mode']}\n"
             f"Video: {frames} frames at 24 FPS ({frames / 24:.3f} seconds). "
-            "The word 'this' refers to the supplied reference <image2>. "
+            + ("The word 'this' refers to the supplied reference <image2>. " if has_reference else
+               "Only the source first frame is available to Qwen; the instruction describes the target edit. ") +
             "The source frame supplies the person and composition to edit."
         )}]
         # Source motion context is labeled separately from the two Qwen image slots.
@@ -284,8 +294,10 @@ class MiniMaxH3V2VGenerate(_Pipeline):
                 {"type": "image_url", "image_url": {"url": media.pil_to_data_url(
                     media.image_batch_to_pil(source[i:i + 1])[0], 512)}},
             ])
-        for label, tensor in (("<image1>: source first frame, canvas for Qwen.", source[:1]),
-                              ("<image2>: target appearance for Qwen; H3 receives only the resulting edit as <Picture 1>.", reference)):
+        qwen_assets = [("<image1>: source first frame, canvas for Qwen.", source[:1])]
+        if has_reference:
+            qwen_assets.append(("<image2>: target appearance for Qwen; H3 receives only the resulting edit as <Picture 1>.", reference))
+        for label, tensor in qwen_assets:
             parts.extend([
                 {"type": "text", "text": label},
                 {"type": "image_url", "image_url": {"url": media.pil_to_data_url(
@@ -334,7 +346,7 @@ class MiniMaxH3V2VGenerate(_Pipeline):
                     " Preserve qwen_prompt exactly. Return the complete JSON envelope. "
                     "Previous response:\n" + content}])
 
-            qwen, minimax = parse_edit_response_with_repair(content, style, repair)
+            qwen, minimax = parse_edit_response_with_repair(content, style, repair, has_reference=has_reference)
         finally:
             if kw.get("unload_llm_after_prompt", True) and model_path:
                 managed_server.stop(CFG)
@@ -354,7 +366,9 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         if not hasattr(self, "_qwen_result_cache"):
             self._qwen_result_cache = perf.SingleEntryCache()
         cache = self._qwen_result_cache
-        qwen_images = [source[:1], reference[:1]]
+        qwen_images = [source[:1]]
+        if reference is not None:
+            qwen_images.append(reference[:1])
         key = None
         if reuse:
             files = [("diffusion_models", model_name), ("text_encoders", encoder_name), ("vae", vae_name)]
@@ -385,7 +399,7 @@ class MiniMaxH3V2VGenerate(_Pipeline):
 
     @classmethod
     def INPUT_TYPES(cls):
-        required = {"source_video": ("IMAGE", {"tooltip": "Source video frames as an IMAGE batch at 24 FPS, matching the native H3 ref_video input. Connect a video loader IMAGE output."}), "ref_image": ("IMAGE",), **common_inputs()}
+        required = {"source_video": ("IMAGE", {"tooltip": "Source video frames as an IMAGE batch at 24 FPS, matching the native H3 ref_video input. Connect a video loader IMAGE output."}), **common_inputs()}
         required.update({
             "fun_controlnet": (choices("model_patches", ["minimax_h3_fun"]),),
             "qwen_model": (choices("diffusion_models", ["qwen_image_2.1", "qwen_image21", "qwen_image_21"]),),
@@ -395,7 +409,7 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         })
         import comfy.samplers
         required["scheduler"] = (list(comfy.samplers.SCHEDULER_NAMES), {"default": "simple"})
-        optional = extra_inputs()
+        optional = {"ref_image": ("IMAGE", {"tooltip": "Optional Qwen appearance reference (image 2). Leave disconnected to edit the source first frame using the text instruction only."}), **extra_inputs()}
         optional.pop("prompt_override", None)
         optional["ref_image_size"] = (["match", "max"], {"default": "max"})
         optional.update({
@@ -411,8 +425,8 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         })
         return {"required": required, "optional": optional}
 
-    def generate(self, source_video, ref_image, fun_controlnet, qwen_model,
-                 qwen_text_encoder, qwen_vae, edit_mode, start_seconds=0.0, max_seconds=15.08,
+    def generate(self, source_video, fun_controlnet, qwen_model,
+                 qwen_text_encoder, qwen_vae, edit_mode, ref_image=None, start_seconds=0.0, max_seconds=15.08,
                  control_strength=1.0, qwen_steps=25, qwen_resolution=1024,
                  qwen_lora_name=NONE, qwen_lora_strength=1.0,
                  h3_sampling_mode="strict video-only (experimental)", reuse_preprocessing=True, **kw):
@@ -434,7 +448,10 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         w, h = geometry.canvas(kw["resolution"], kw["aspect_ratio"], original.shape[2], original.shape[1], kw["custom_aspect"])
         source = v2v.resize_frames(perf.take_frames(original, indices), w, h)
 
+        reference = ref_image[:1] if ref_image is not None else None
         instruction = kw["instruction"].strip()
+        if not instruction and reference is None:
+            raise ValueError("Without ref_image, describe the requested edit in instruction, e.g. change her dress to red.")
         if not instruction:
             instruction = ("Replace only the source person's clothing with the outfit in the reference image; preserve their identity."
                            if edit_mode == "change clothes" else
@@ -443,10 +460,10 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         if not instruction:
             raise ValueError("Write an edit instruction for custom edit mode")
         timer.mark("prepare_frames")
-        qwen_prompt, prompt = self._enhance_edit(source, ref_image[:1], frames=frames,
+        qwen_prompt, prompt = self._enhance_edit(source, reference, frames=frames,
             **{**kw, "instruction": instruction, "edit_mode": edit_mode, "reuse_preprocessing": reuse_preprocessing})
         timer.mark("enhancer")
-        qwen_image = self._cached_qwen_edit(source, ref_image, qwen_prompt, kw["seed"],
+        qwen_image = self._cached_qwen_edit(source, reference, qwen_prompt, kw["seed"],
             qwen_model, qwen_text_encoder, qwen_vae, qwen_lora_name, qwen_lora_strength,
             qwen_steps, qwen_resolution, reuse_preprocessing)
         timer.mark("qwen_edit")

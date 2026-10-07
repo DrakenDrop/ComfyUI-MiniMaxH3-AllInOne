@@ -5,7 +5,7 @@ All-in-one ComfyUI nodes for **MiniMax H3 reference-to-video (R2V)** and **exper
 ## Features
 
 - R2V with one reference image and one reference audio clip.
-- V2V with source video frames as an IMAGE batch and one required appearance reference image.
+- V2V with source video frames as an IMAGE batch and an optional appearance reference image.
 - Qwen Image 2.1 editing of the source video's first frame.
 - Direct source-video control with H3-compatible Fun ControlNet Union weights.
 - Local llama.cpp prompting with automatic GGUF discovery in `ComfyUI/models/LLM/`.
@@ -40,6 +40,7 @@ Configure llama.cpp and install the required models as described below, restart 
 |---|---|---|
 | [R2V image and audio](example_workflows/r2v_image_audio.json) | Reference image and audio | Video with audio |
 | [V2V with appearance reference](example_workflows/v2v_qwen_pose_silent.json) | Source video and reference image | Silent edited video |
+| [V2V text edit](example_workflows/v2v_text_only_edit.json) | Source video and text instruction; reference disconnected | Decoded edited frames |
 
 R2V uses standard media loaders and Save Video. V2V uses VHS Load Video (IMAGE output), Load Image, one generation node, and VHS Video Combine or Preview Image. Model and sampler settings are configured inside the generation node.
 
@@ -88,33 +89,33 @@ The node loads H3 ref2va, the H3 text encoder, video VAE and audio VAE. It write
 
 ## V2V Edit
 
-`Load Image + Load Video (IMAGE output) -> MiniMax H3 V2V Edit -> IMAGE output`
+`Load Video (IMAGE output) + optional Load Image -> MiniMax H3 V2V Edit -> IMAGE output`
 
-Exactly two media inputs are required:
+Source video is required; the additional reference image is optional:
 
 | Input | Internal use |
 |---|---|
 | `source_video` (IMAGE batch) | Source frames connected directly to Fun ControlNet control_video |
-| `ref_image` (IMAGE) | Target clothing/person reference supplied as Qwen Image Edit's second image |
+| `ref_image` (IMAGE) | Optional target clothing/person reference supplied as Qwen Image Edit's second image |
 
 The `source_video` socket accepts an **IMAGE batch**, matching native H3's `ref_video` input. Connect the **IMAGE output of VHS Load Video**. Set `force_rate = 24`, `select_every_nth = 1`, and leave the loader's VAE input disconnected. IMAGE batches contain no FPS metadata, so the node interprets the frames at **24 FPS**. A batch loaded at a different FPS would change timing; resample in the video loader first.
 
 Qwen's first image is extracted automatically from source frame 0. Qwen editing, Fun ControlNet, H3 sampling, and VAE Decode run inside the node. There are no external pose, edit mask, or pre-edited-frame input sockets. The source audio is ignored; the node has no audio input, audio VAE loader, audio decode, or audio output.
 
-After updating, recreate the V2V node or load the updated example. The `source_video` socket now uses IMAGE rather than VIDEO; reconnect the video loader\'s IMAGE output. Both media inputs must be connected. The old `v2v_video_only_input.json` filename is retained for existing download links but now also requires a reference image.
+After updating, recreate the V2V node or load the updated example. The `source_video` socket now uses IMAGE rather than VIDEO; reconnect the video loader\'s IMAGE output. Only `source_video` must be connected. `ref_image` may remain disconnected. Use `v2v_text_only_edit.json` for a source-video-and-text example.
 
 Internally:
 
 1. Read the supplied 24 FPS IMAGE batch and select a segment. Snap DOWN to a valid `17k+5` frame count, capped at 362 frames. The end can be shortened by up to 16 frames (0.67 seconds); no repeated last frames are added. This preserves the sampled source timing instead of stretching it.
 2. Resize/crop the source to the selected canvas. `same as reference` follows the **source video's** aspect ratio in V2V, and the image's aspect ratio in R2V.
 3. Enhance the single user instruction into separate internal Qwen and MiniMax prompts.
-4. Using the Qwen prompt prepared by the shared enhancer, Qwen Image 2.1 edits source frame 0 as Image 1 with the connected reference image as Image 2.
+4. Using the Qwen prompt prepared by the shared enhancer, Qwen Image 2.1 edits source frame 0 as Image 1. A connected reference becomes Image 2; otherwise the text instruction supplies the target appearance.
 5. Use the MiniMax prompt prepared by the shared enhancer. Supply only the Qwen-edited image as H3's appearance reference, without a forced first-frame guide.
 6. Load the H3 Fun ControlNet Union patch and pass the source IMAGE batch directly to its `control_video` input. No pose preprocessor or mask is used.
 7. Select strict video-only sampling (experimental, default), or native AV sampling with discarded audio latents for reference-workflow comparison. See the mode table below.
 8. Sample and VAE-decode the video frames. Return the frames, the Qwen-generated image, and the two enhanced prompts. Neither mode decodes or returns audio; native AV still computes audio latents internally.
 
-`change clothes` preserves source identity and takes the reference outfit. `change person` takes target identity and preserves source performance. A custom instruction can describe either edit in Indonesian or English. Direct RGB control follows the requested workflow; compatibility and motion adherence depend on the selected ControlNet weights. Exact pixel-level/person-motion equality is not guaranteed by a generative model. Full-frame edits can alter backgrounds.
+`change clothes` preserves source identity; `change person` changes the requested identity while preserving source performance. The target appearance comes from the optional reference or the text instruction. A custom instruction can describe either edit in Indonesian or English. Direct RGB control follows the requested workflow; compatibility and motion adherence depend on the selected ControlNet weights. Exact pixel-level/person-motion equality is not guaranteed by a generative model. Full-frame edits can alter backgrounds.
 
 ### Comparing against the supplied V2V workflow
 
@@ -175,11 +176,13 @@ Use the Qwen **2.1** diffusion model, encoder and VAE together. Older Qwen Image
 
 ## One instruction for Qwen and MiniMax
 
+The V2V `ref_image` input is optional. Leave it disconnected for a text-directed edit such as **"Change her dress to red"**: Qwen receives only the source first frame as `<image1>`. With a reference connected, that image becomes `<image2>`. Both paths send the Qwen result to H3 as `<Picture 1>`, while source frames continue to drive Fun ControlNet. Without a reference, write a specific edit instruction; an empty instruction cannot supply a target outfit/person.
+
 V2V exposes one `instruction` field. For example: **"Change her clothes to this"**, with the target outfit connected to `ref_image`.
 
 Before diffusion sampling, the selected vision GGUF reads the source first frame, the reference image and sampled source-motion frames through llama.cpp. A single enhancement response supplies two prompts; official MiniMax sections are normalized into text:
 
-- `qwen_prompt`: an editing directive using `<image1>` for the source first frame and `<image2>` for the reference.
+- `qwen_prompt`: an editing directive using `<image1>` for the source first frame and `<image2>` only when an optional reference is connected.
 - `minimax_prompt`: the six-section H3 video-editing prompt, preserving source performance and using the intended Qwen edit as an appearance reference, without a frame guide.
 
 These are generated from the single user instruction and exposed as STRING outputs for inspection. The enhancer runs before Qwen generates the edited frame. The MiniMax prompt describes the planned edit; it does not claim to inspect a result that has not been generated yet.
@@ -249,7 +252,7 @@ After updating, restart ComfyUI. Existing workflow widgets retain their selected
 
 `reuse_preprocessing` defaults to **true**. Each V2V node retains its last successful managed-llama.cpp prompt pair and one decoded Qwen image in CPU memory. It does not retain additional Qwen model weights or video latents. Identical prompt requests skip llama.cpp inference and the preceding ComfyUI model unload; identical Qwen inputs skip its loaders, encoding, sampling and decode.
 
-The enhancer key includes the exact image/text request, generation parameters, configuration, and GGUF/mmproj file metadata (all shards for split GGUFs). External-server prompt results are not cached because the server can change models without changing its URL. The Qwen key includes every pixel of its two input images, prompt, seed, model/encoder/VAE and LoRA file metadata, steps, and resolution. Set `reuse_preprocessing=false` to clear/bypass both caches. Caches disappear when the node is recreated or ComfyUI restarts.
+The enhancer key includes the exact image/text request, generation parameters, configuration, and GGUF/mmproj file metadata (all shards for split GGUFs). External-server prompt results are not cached because the server can change models without changing its URL. The Qwen key includes every pixel of its one or two input images, prompt, seed, model/encoder/VAE and LoRA file metadata, steps, and resolution. Set `reuse_preprocessing=false` to clear/bypass both caches. Caches disappear when the node is recreated or ComfyUI restarts.
 
 This mainly helps when rerunning with different **H3** sampler, steps, control strength, or model while preprocessing inputs stay identical. Changing the shared seed reruns both stages. First renders and changed inputs still perform their full preprocessing; no GPU speedup factor has been measured. Contiguous source clips also use a tensor view to avoid an unnecessary full-video copy.
 
@@ -261,7 +264,7 @@ Keep the working model, scheduler, steps and resolution for the first timing com
 
 API signatures and model filenames were checked against current official ComfyUI and Qwen sources. Workflow graph consistency is checked by `tools/check_workflows.cjs`. Unit tests cover canvas sizing, temporal sampling, first-frame prompt policy, audio-tag rejection and the zero-audio-token wrapper contract: `python -m unittest discover -s tests -v`.
 
-Python syntax checks, all 29 unit tests (including discovery, prompt-format regressions, and native/strict V2V routing), and the workflow graph checks pass. End-to-end generation has **not** been run because no ComfyUI GPU runtime is available here. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
+Python syntax checks, all 32 unit tests (including discovery, prompt-format regressions, and native/strict V2V routing), and the workflow graph checks pass. End-to-end generation has **not** been run because no ComfyUI GPU runtime is available here. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
 
 The example workflows were built using public official templates as integration references. They have not been validated through end-to-end generation.
 

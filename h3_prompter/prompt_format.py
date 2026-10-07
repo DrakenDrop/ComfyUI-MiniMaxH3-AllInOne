@@ -88,7 +88,7 @@ def apply_policy(prompt, first_frame=False, silent=False, style="official"):
     return "\n\n".join(f"{f}:\n{sections[f]}" for f in FIELDS)
 
 
-def parse_edit_response(content, style="official"):
+def parse_edit_response(content, style="official", has_reference=True):
     try:
         result = json.loads(strip_fence(content))
     except (TypeError, AttributeError, json.JSONDecodeError) as exc:
@@ -98,8 +98,12 @@ def parse_edit_response(content, style="official"):
     qwen = result["qwen_prompt"]
     if not isinstance(qwen, str) or not qwen.strip():
         raise ValueError("Qwen prompt must be non-empty text.")
-    if "<image1>" not in qwen or "<image2>" not in qwen:
-        raise ValueError("Qwen prompt must reference <image1> (source) and <image2> (target).")
+    required = ("<image1>", "<image2>") if has_reference else ("<image1>",)
+    if not all(label in qwen for label in required):
+        raise ValueError("Qwen prompt must reference " + " and ".join(required) + ".")
+    allowed = {"1", "2"} if has_reference else {"1"}
+    if any(label not in allowed for label in re.findall(r"<image\s*(\d+)>", qwen, re.I)):
+        raise ValueError("Qwen prompt references an image that is not connected.")
     minimax = apply_policy(result["minimax_prompt"], silent=True, style=style)
     if re.search(r"<image\s*\d+>", minimax, re.I):
         raise ValueError("MiniMax prompt contains Qwen image labels.")
@@ -128,12 +132,12 @@ def _check_v2v_anchor(prompt):
             "reference; remove first/last-frame, keyframe and shot-begins-from claims.")
 
 
-def parse_edit_response_with_repair(content, style, repair):
+def parse_edit_response_with_repair(content, style, repair, has_reference=True):
     """Retry unsupported frame-anchor claims once, preserving the original Qwen prompt."""
     try:
-        return parse_edit_response(content, style=style)
+        return parse_edit_response(content, style=style, has_reference=has_reference)
     except V2VAnchorError as exc:
         original_qwen = json.loads(strip_fence(content))["qwen_prompt"].strip()
         corrected = repair(str(exc))
-        _, minimax = parse_edit_response(corrected, style=style)
+        _, minimax = parse_edit_response(corrected, style=style, has_reference=has_reference)
         return original_qwen, minimax

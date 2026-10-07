@@ -27,7 +27,7 @@ class Tensor:
         return self.label
 
 class V2VRoutingTests(unittest.TestCase):
-    def run_mode(self, mode):
+    def run_mode(self, mode, has_reference=True):
         source, target = Tensor("source"), Tensor("target", 1)
         edited = Tensor("qwen", 1, 1024, 1024)
         conditioning = Mock(return_value=("positive", "latent"))
@@ -37,7 +37,10 @@ class V2VRoutingTests(unittest.TestCase):
         h3 = types.SimpleNamespace(
             MiniMaxH3ReferenceToVideo=types.SimpleNamespace(execute=conditioning),
             MiniMaxH3FunControlNetApply=types.SimpleNamespace(execute=control))
+        comfy = types.ModuleType("comfy")
+        comfy.samplers = types.SimpleNamespace(SCHEDULER_NAMES=["simple"])
         modules = {
+            "comfy": comfy, "comfy.samplers": comfy.samplers,
             "torch": types.SimpleNamespace(tensor=lambda value, **kw: value, long=object()),
             "nodes": types.SimpleNamespace(),
             "folder_paths": types.SimpleNamespace(),
@@ -58,6 +61,7 @@ class V2VRoutingTests(unittest.TestCase):
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "MiniMaxH3V2VGenerate")
         namespace = dict(__name__="routing_pkg.nodes_compact", __package__="routing_pkg",
                          _Pipeline=Pipeline, CATEGORY="test", NONE="(none)", perf=perf,
+                         common_inputs=lambda: {}, extra_inputs=lambda: {}, choices=lambda *a, **kw: [],
                          args=lambda output: output, patch_video_only=wrapper,
                          geometry=types.SimpleNamespace(
                              video_timeline=lambda *a: (22, list(range(22))),
@@ -67,8 +71,13 @@ class V2VRoutingTests(unittest.TestCase):
         node = namespace["MiniMaxH3V2VGenerate"]()
         node._enhance_edit = Mock(return_value=("qwen prompt", "H3 prompt"))
         with patch.dict(sys.modules, modules):
+            schema = node.INPUT_TYPES()
+            self.assertNotIn("ref_image", schema["required"])
+            self.assertIn("ref_image", schema["optional"])
+            self.assertIn("source_video", schema["required"])
             result = node.generate(
-                source, target, "fun", "qwen-model", "qwen-clip", "qwen-vae", "custom",
+                source, "fun", "qwen-model", "qwen-clip", "qwen-vae", "custom",
+                **({"ref_image": target} if has_reference else {}),
                 h3_sampling_mode=mode, reuse_preprocessing=False, instruction="change clothes", resolution="768p (native)",
                 aspect_ratio="same as reference", custom_aspect="16:9", seed=1, steps=2,
                 sampler_name="res_multistep", scheduler="simple")
@@ -79,7 +88,7 @@ class V2VRoutingTests(unittest.TestCase):
         self.assertEqual(node.sample_args[5:8], (2, "res_multistep", "simple"))
         self.assertIs(result[1], edited)
         self.assertEqual(result[2:], ("H3 prompt", "qwen prompt"))
-        self.assertEqual([t.label for t in qwen.call_args.args[4]], ["source", "target"])
+        self.assertEqual([t.label for t in qwen.call_args.args[4]], ["source", "target"] if has_reference else ["source"])
         return node, wrapper
 
     def test_native_matches_reference_routing_without_audio_wrapper(self):
@@ -87,6 +96,10 @@ class V2VRoutingTests(unittest.TestCase):
         wrapper.assert_not_called()
         self.assertFalse(node.sample_kw["silent"])
         self.assertEqual(node.sample_args[0], "controlled-model")
+
+    def test_reference_can_be_omitted_in_both_sampling_modes(self):
+        self.run_mode("native AV (discard audio)", has_reference=False)
+        self.run_mode("strict video-only (experimental)", has_reference=False)
 
     def test_strict_remains_explicitly_video_only(self):
         node, wrapper = self.run_mode("strict video-only (experimental)")

@@ -503,7 +503,8 @@ ASSET ROLES
 - <Picture 1> is the planned Qwen-edited appearance reference. It is not a pinned
   first frame, keyframe or last frame. Never say a shot begins from, starts from,
   ends on or is anchored to a picture. Do not use the keyframe completion task.
-- The raw <image2> is supplied to Qwen only. No <Picture 2> exists in H3.
+- An optional raw appearance image, when connected, is supplied to Qwen only.
+  Without it, use the text instruction for the target appearance. No <Picture 2> exists in H3.
 - The Qwen result has not been generated yet. Describe the requested appearance
   based on the supplied reference; do not claim you inspected the generated result.
 
