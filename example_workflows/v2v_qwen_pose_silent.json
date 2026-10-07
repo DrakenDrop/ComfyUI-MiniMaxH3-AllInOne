@@ -96,7 +96,7 @@
       "mode": 0,
       "inputs": [
         {
-          "name": "ref_video",
+          "name": "source_video",
           "type": "VIDEO",
           "link": 2
         },
@@ -104,21 +104,6 @@
           "name": "ref_image",
           "type": "IMAGE",
           "link": 1
-        },
-        {
-          "name": "edited_first_frame",
-          "type": "IMAGE",
-          "link": null
-        },
-        {
-          "name": "external_pose",
-          "type": "IMAGE",
-          "link": null
-        },
-        {
-          "name": "edit_mask",
-          "type": "MASK",
-          "link": null
         }
       ],
       "outputs": [

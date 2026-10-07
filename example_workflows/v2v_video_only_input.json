@@ -3,6 +3,48 @@
   "last_link_id": 3,
   "nodes": [
     {
+      "id": 1,
+      "type": "LoadImage",
+      "pos": [
+        0,
+        100
+      ],
+      "size": [
+        310,
+        150
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null,
+          "slot_index": 1
+        }
+      ],
+      "title": "Optional target reference (disconnect for text-only edit)",
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "target_reference.png"
+      ],
+      "widgets_values_named": {
+        "image": "target_reference.png"
+      }
+    },
+    {
       "id": 2,
       "type": "LoadVideo",
       "pos": [
@@ -54,29 +96,14 @@
       "mode": 0,
       "inputs": [
         {
-          "name": "ref_video",
+          "name": "source_video",
           "type": "VIDEO",
           "link": 2
         },
         {
           "name": "ref_image",
           "type": "IMAGE",
-          "link": null
-        },
-        {
-          "name": "edited_first_frame",
-          "type": "IMAGE",
-          "link": null
-        },
-        {
-          "name": "external_pose",
-          "type": "IMAGE",
-          "link": null
-        },
-        {
-          "name": "edit_mask",
-          "type": "MASK",
-          "link": null
+          "link": 1
         }
       ],
       "outputs": [
@@ -141,7 +168,7 @@
         "minimax_h3_video_vae_int8_convrot.safetensors",
         "(llama-server yang sudah jalan)",
         "auto",
-        "Ganti pakaian orang di video menjadi jas hitam dan kemeja putih. Pertahankan identitas, pose, gerakan, kamera, dan latar sumber.",
+        "Ganti pakaian orang di video sesuai gambar referensi. Pertahankan identitas dan gerakan sumber.",
         "480p",
         "same as reference",
         "16:9",
@@ -177,7 +204,7 @@
         "h3_video_vae": "minimax_h3_video_vae_int8_convrot.safetensors",
         "llm_model": "(llama-server yang sudah jalan)",
         "mmproj": "auto",
-        "instruction": "Ganti pakaian orang di video menjadi jas hitam dan kemeja putih. Pertahankan identitas, pose, gerakan, kamera, dan latar sumber.",
+        "instruction": "Ganti pakaian orang di video sesuai gambar referensi. Pertahankan identitas dan gerakan sumber.",
         "resolution": "480p",
         "aspect_ratio": "same as reference",
         "custom_aspect": "16:9",
@@ -254,6 +281,14 @@
     }
   ],
   "links": [
+    [
+      1,
+      1,
+      0,
+      3,
+      1,
+      "IMAGE"
+    ],
     [
       2,
       2,
