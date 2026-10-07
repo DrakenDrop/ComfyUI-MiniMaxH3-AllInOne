@@ -107,4 +107,33 @@ def parse_edit_response(content, style="official"):
         raise ValueError("MiniMax prompt must reference <Video 1> and the Qwen-edited <Picture 1>.")
     if any(n != "1" for n in re.findall(r"<Picture\s+(\d+)>", minimax, re.I)):
         raise ValueError("MiniMax receives only one picture: the Qwen-edited <Picture 1>.")
+    _check_v2v_anchor(minimax)
     return qwen.strip(), minimax
+
+
+class V2VAnchorError(ValueError):
+    """An enhancer assigned a frame anchor which this V2V pipeline does not supply."""
+
+
+def _check_v2v_anchor(prompt):
+    patterns = (
+        r"\b(?:begins?|starts?|ends?|opens?|closes?)\s+(?:exactly\s+)?(?:from|on|with|at)\s+<Picture\s+1>",
+        r"<Picture\s+1>[^.!?\n]{0,100}\b(?:first[ -]frame|last[ -]frame|keyframe|frame[ -]0)\b",
+        r"\b(?:first[ -]frame|last[ -]frame|keyframe|frame[ -]0|anchor(?:ed)?)\b[^.!?\n]{0,100}<Picture\s+1>",
+        r"\bkeyframe completion\b",
+    )
+    if any(re.search(pattern, prompt, re.I) for pattern in patterns):
+        raise V2VAnchorError(
+            "MiniMax V2V has no frame guide. Use <Picture 1> only as an appearance "
+            "reference; remove first/last-frame, keyframe and shot-begins-from claims.")
+
+
+def parse_edit_response_with_repair(content, style, repair):
+    """Retry unsupported frame-anchor claims once, preserving the original Qwen prompt."""
+    try:
+        return parse_edit_response(content, style=style)
+    except V2VAnchorError as exc:
+        original_qwen = json.loads(strip_fence(content))["qwen_prompt"].strip()
+        corrected = repair(str(exc))
+        _, minimax = parse_edit_response(corrected, style=style)
+        return original_qwen, minimax

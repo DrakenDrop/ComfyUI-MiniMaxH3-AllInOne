@@ -180,11 +180,13 @@ V2V exposes one `instruction` field. For example: **"Change her clothes to this"
 Before diffusion sampling, the selected vision GGUF reads the source first frame, the reference image and sampled source-motion frames through llama.cpp. A single enhancement response supplies two prompts; official MiniMax sections are normalized into text:
 
 - `qwen_prompt`: an editing directive using `<image1>` for the source first frame and `<image2>` for the reference.
-- `minimax_prompt`: the six-section H3 video-editing prompt, preserving source performance and using the intended edited frame as its frame-0 guide.
+- `minimax_prompt`: the six-section H3 video-editing prompt, preserving source performance and using the intended Qwen edit as an appearance reference, without a frame guide.
 
 These are generated from the single user instruction and exposed as STRING outputs for inspection. The enhancer runs before Qwen generates the edited frame. The MiniMax prompt describes the planned edit; it does not claim to inspect a result that has not been generated yet.
 
 Qwen editing rules are adapted from the [official edit enhancer system prompt](https://github.com/QwenLM/Qwen-Image-2.1/blob/main/prompt_rewrite/prompts/system_prompt_edit.txt). Qwen also publishes [PE-I2I weights](https://huggingface.co/Qwen/Qwen-Image-2.1-PE-I2I); this node uses your selected llama.cpp vision model with adapted instructions, rather than requiring those specific weights.
+
+V2V uses dedicated edit-preservation rules, without the general R2V template's frame-anchor or creative-shot examples. Unsupported first/last-frame or keyframe claims trigger one prompt-repair attempt before diffusion; the original Qwen prompt is preserved. If the repair still contains an anchor, generation stops with a specific error. This check detects common English anchor phrases; it does not prove every visual description is correct.
 
 The prompt enhancer requires working vision support and a matching mmproj. Malformed or incomplete responses stop with an error instead of silently using an unrelated prompt.
 
@@ -239,11 +241,15 @@ Discovery also applies when configured external-server `autostart` is enabled. S
 - V2V exposes decoded video frames, the Qwen edit, and both enhanced prompts. R2V additionally exposes its prompt, canvas size and frame count.
 - These additions do not replace or change the existing prompter, I2V, V2V or Qwen keyframe nodes.
 
+### Diagnosing an unchanged V2V result
+
+After updating, restart ComfyUI. Existing workflow widgets retain their selected values. The console logs a `V2V H3 config:` line with the actual model, encoder, VAE, H3 LoRA, sampling mode, sampler, scheduler, steps, seed, canvas, frame count and control settings. Share this line and the current workflow when comparing a failed render with a working one. A prompt alone cannot establish which sampling path or checkpoint ran, and fixing prompt wording is not proof that visual artifacts are resolved.
+
 ## Validation status
 
 API signatures and model filenames were checked against current official ComfyUI and Qwen sources. Workflow graph consistency is checked by `tools/check_workflows.cjs`. Unit tests cover canvas sizing, temporal sampling, first-frame prompt policy, audio-tag rejection and the zero-audio-token wrapper contract: `python -m unittest discover -s tests -v`.
 
-Python syntax checks, all 18 unit tests (including discovery, prompt-format regressions, and native/strict V2V routing), and the workflow graph checks pass. End-to-end generation has **not** been run because no ComfyUI GPU runtime is available here. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
+Python syntax checks, all 21 unit tests (including discovery, prompt-format regressions, and native/strict V2V routing), and the workflow graph checks pass. End-to-end generation has **not** been run because no ComfyUI GPU runtime is available here. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
 
 The example workflows were built using public official templates as integration references. They have not been validated through end-to-end generation.
 

@@ -491,3 +491,48 @@ def clean_caption(text: str, n: int) -> str:
     t = re.sub(r"\s{2,}", " ", t).strip()
     return t[:900]
 
+
+
+# V2V has no frame guide: avoid the general R2V examples and creative shot rules.
+SYSTEM_PROMPT_V2V = """Write only the MiniMax part as a faithful video-edit prompt.
+Use the six official sections in this order: subject_definitions, summary,
+retention_analysis, detailed_description, overall_soundscape, non_diegetic_music.
+
+ASSET ROLES
+- <Video 1> is the source performance and camera/timing reference.
+- <Picture 1> is the planned Qwen-edited appearance reference. It is not a pinned
+  first frame, keyframe or last frame. Never say a shot begins from, starts from,
+  ends on or is anchored to a picture. Do not use the keyframe completion task.
+- The raw <image2> is supplied to Qwen only. No <Picture 2> exists in H3.
+- The Qwen result has not been generated yet. Describe the requested appearance
+  based on the supplied reference; do not claim you inspected the generated result.
+
+EDIT PRESERVATION
+- Apply only the requested edit, already present throughout the output.
+- For clothing edits preserve the source identity, face, hair, skin tone, body,
+  accessories, lighting and background unless the user explicitly changes them.
+- For person edits transfer the requested identity while retaining source motion,
+  timing, camera and environment; do not demand preservation of the old identity.
+- Do not enumerate or invent actions, gestures, expressions, lip movements, camera
+  moves, cuts or endings, even from sparsely sampled frames. State once that motion,
+  gestures, expressions, lip movements, camera and timing follow <Video 1>.
+- Do not add cinematic styling, warmer/softer lighting, new skin-color descriptions,
+  props or garment details not supported by the request and reference.
+- Do not describe an on-screen transformation or the original outfit.
+
+SECTIONS
+subject_definitions: Define only needed <Subject N> roles, the appearance supplied
+by <Picture 1>, and "<Video 1> is the source video for the target video edit."
+summary: Begin "[video editing] The target video is an edited version of <Video 1>."
+State the requested edit and appearance source briefly.
+retention_analysis: State what changes and what stays using partially_preserved,
+attribute_transfer or fully_preserved as appropriate. Give <Video 1> a motion,
+camera and timing retention entry. Do not add a first-frame retention entry.
+detailed_description: Describe the edited appearance, citing <Picture 1>, and its
+presence throughout the clip. State that source motion and camera are preserved.
+Use concise prose without a new shot plan or invented start/end events.
+overall_soundscape: N/A
+non_diegetic_music: N/A
+
+Write in English. Asset labels are literal. These rules concern minimax_prompt
+only; qwen_prompt keeps the image-edit instructions given separately."""

@@ -5,7 +5,7 @@ import os
 from . import nodes as prompter
 from .h3_prompter import canvas as geometry, local_models, managed_server, v2v
 from .h3_prompter.video_only import patch_video_only, VideoOnlyNoise
-from .h3_prompter.prompt_format import apply_policy, parse_edit_response
+from .h3_prompter.prompt_format import apply_policy, parse_edit_response_with_repair
 
 CFG = prompter._CFG
 CATEGORY = "MiniMax H3/All in One"
@@ -249,11 +249,13 @@ class MiniMaxH3V2VGenerate(_Pipeline):
             "Preserve source timing, actions, camera and shots. Do not invent motion or sound. "
             "Use [video editing] and describe silent video only. "
             "Do not use <Audio N> or Qwen <imageN> labels in minimax_prompt.\n\n"
-            + ("H3 formatting rules (apply ONLY to minimax_prompt):\n" + prompts.SYSTEM_PROMPT_R2V
+            + ("H3 formatting rules (apply ONLY to minimax_prompt):\n" + prompts.SYSTEM_PROMPT_V2V
                if style == "official" else
                "For minimax_prompt write 2-4 concise English sentences describing the requested edit, "
                "the roles of <Video 1> and the Qwen-edited <Picture 1>, and preserved motion/camera/timing. "
-               "No pinned frame, section headings, retention analysis or shot list.")
+               "No pinned frame, section headings, retention analysis or shot list. "
+               "Do not enumerate actions or invent gestures, expressions, camera moves or endings. "
+               "Do not add cinematic styling, new lighting or skin-color descriptions.")
         )
         extra = str(kw.get("additional_system_prompt", "")).strip()
         if extra:
@@ -293,15 +295,26 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         base = dict(model=alias, max_tokens=int(kw.get("max_tokens", 3072)),
                     seed=int(kw["seed"]) % (2**32), temperature=0.2, top_p=0.8,
                     top_k=20, cache_prompt=True, response_format={"type": "json_object"})
-        try:
-            content, _, _ = prompter.MiniMaxH3R2VPrompter._run(
+        def request(request_parts):
+            return prompter.MiniMaxH3R2VPrompter._run(
                 server_url, base, {"role": "system", "content": system},
-                {"role": "user", "content": parts}, "off",
-                float(CFG.get("request_timeout_seconds", 600)), False, None, prefill=None)
+                {"role": "user", "content": request_parts}, "off",
+                float(CFG.get("request_timeout_seconds", 600)), False, None, prefill=None)[0]
+
+        try:
+            content = request(parts)
+
+            def repair(reason):
+                lc.log("V2V enhancer returned an unsupported frame anchor; repairing MiniMax prompt once.")
+                return request(parts + [{"type": "text", "text":
+                    "Correct only minimax_prompt in the previous response. " + reason +
+                    " Preserve qwen_prompt exactly. Return the complete JSON envelope. "
+                    "Previous response:\n" + content}])
+
+            qwen, minimax = parse_edit_response_with_repair(content, style, repair)
         finally:
             if kw.get("unload_llm_after_prompt", True) and model_path:
                 managed_server.stop(CFG)
-        qwen, minimax = parse_edit_response(content, style=style)
         lc.log("One instruction enhanced into Qwen and MiniMax prompts.")
         return qwen.strip(), minimax
 
@@ -389,7 +402,14 @@ class MiniMaxH3V2VGenerate(_Pipeline):
             model=model, model_patch=patch, vae=vae, strength=control_strength,
             start_percent=0.0, end_percent=1.0, control_video=source))[0]
         from .h3_prompter import llama_client as lc
-        lc.log(f"V2V sampling: {h3_sampling_mode}; scheduler={kw['scheduler']}; steps={kw['steps']}; Qwen steps={qwen_steps}")
+        lc.log(f"V2V H3 config: mode={h3_sampling_mode}; model={kw.get('h3_model')}; "
+               f"clip={kw.get('h3_text_encoder')}; vae={kw.get('h3_video_vae')}; "
+               f"lora={kw.get('lora_name', NONE)}@{kw.get('lora_strength', 1.0)}; "
+               f"sampler={kw['sampler_name']}; scheduler={kw['scheduler']}; "
+               f"steps={kw['steps']}; seed={kw['seed']}; canvas={w}x{h}; frames={frames}; "
+               f"ref_size={kw.get('ref_image_size', 'max')}; "
+               f"control={fun_controlnet}@{control_strength}; control_range=0.0-1.0; "
+               "references=Qwen image + source video; frame_guide=none")
         if strict_video_only:
             model = patch_video_only(model)
         images, _ = self._sample(model, positive, latent, vae, kw["seed"], kw["steps"], kw["sampler_name"], kw["scheduler"], silent=strict_video_only)

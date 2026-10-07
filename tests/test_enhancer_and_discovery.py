@@ -61,6 +61,49 @@ class PromptRegressionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             fmt.parse_edit_response('{"qwen_prompt": "unfinished')
 
+
+    def test_v2v_rejects_reported_shot_anchor_in_both_styles(self):
+        qwen = "Edit <image1> using the outfit in <image2>."
+        sections = {**SECTIONS, "detailed_description":
+                    "Live-action cinematic style. [Shot 1] The shot begins from <Picture 1>, "
+                    "showing the woman in a black dress."}
+        with self.assertRaises(fmt.V2VAnchorError):
+            fmt.parse_edit_response(json.dumps({"qwen_prompt": qwen, "minimax_prompt": sections}))
+        for phrase in ("The shot starts from <Picture 1>.",
+                       "<Picture 1> is the first frame.",
+                       "Use <Picture 1> as the keyframe.",
+                       "[keyframe completion + video editing]"):
+            with self.subTest(phrase=phrase), self.assertRaises(fmt.V2VAnchorError):
+                fmt.parse_edit_response(json.dumps({"qwen_prompt": qwen, "minimax_prompt":
+                    "Edit <Video 1> using <Picture 1>. " + phrase}), style="simple")
+
+    def test_v2v_anchor_repair_preserves_original_qwen(self):
+        qwen = "Edit <image1> using only clothing from <image2>."
+        bad = json.dumps({"qwen_prompt": qwen, "minimax_prompt":
+                         "Edit <Video 1>. The shot begins from <Picture 1>."})
+        good = json.dumps({"qwen_prompt": "Different edit of <image1> from <image2>.",
+                          "minimax_prompt": "Edit <Video 1> using the outfit in <Picture 1>."})
+        from unittest.mock import Mock
+        repair = Mock(return_value=good)
+        q, m = fmt.parse_edit_response_with_repair(bad, "simple", repair)
+        self.assertEqual(q, qwen)
+        self.assertIn("outfit in <Picture 1>", m)
+        repair.assert_called_once()
+        repair.reset_mock()
+        repair.return_value = bad
+        with self.assertRaises(fmt.V2VAnchorError):
+            fmt.parse_edit_response_with_repair(bad, "simple", repair)
+        repair.assert_called_once()
+
+    def test_valid_v2v_skips_repair_and_r2v_anchor_still_works(self):
+        from unittest.mock import Mock
+        repair = Mock()
+        pair = json.dumps({"qwen_prompt": "Edit <image1> using <image2>.", "minimax_prompt": SECTIONS})
+        fmt.parse_edit_response_with_repair(pair, "official", repair)
+        repair.assert_not_called()
+        anchored = fmt.apply_policy(SECTIONS, first_frame=True)
+        self.assertIn("begins from <Picture 1>", anchored)
+
 class DiscoveryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
