@@ -203,11 +203,11 @@ class MiniMaxH3V2VGenerate(_Pipeline):
     FUNCTION = "generate"
     RETURN_TYPES = ("IMAGE", "VIDEO", "STRING", "IMAGE", "IMAGE", "INT", "INT", "INT")
     RETURN_NAMES = ("images", "video", "prompt", "edited_reference", "control_pose", "width", "height", "frame_count")
-    DESCRIPTION = "VIDEO + optional target image -> Qwen Image 2.1 first-frame edit -> pose/Fun ControlNet -> H3 sampler -> VAE Decode IMAGE frames and silent VIDEO. Video-only denoising is experimental."
+    DESCRIPTION = "Source VIDEO + reference IMAGE -> Qwen Image 2.1 first-frame edit -> pose/Fun ControlNet -> H3 sampler -> VAE Decode IMAGE frames and silent VIDEO. Video-only denoising is experimental."
 
     @classmethod
     def INPUT_TYPES(cls):
-        required = {"ref_video": ("VIDEO",), **common_inputs()}
+        required = {"source_video": ("VIDEO",), "ref_image": ("IMAGE",), **common_inputs()}
         required.update({
             "fun_controlnet": (choices("model_patches", ["minimax_h3_fun"]),),
             "pose_checkpoint": (choices("checkpoints", ["sdpose"]),),
@@ -218,30 +218,25 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         })
         optional = extra_inputs()
         optional.update({
-            "ref_image": ("IMAGE", {"tooltip": "Optional target person/outfit reference. Qwen's primary image is always source frame 0."}),
             "start_seconds": ("FLOAT", {"default": 0.0, "min": 0, "max": 3600}),
             "max_seconds": ("FLOAT", {"default": 15.08, "min": 0.21, "max": 15.08}),
             "pose_strength": ("FLOAT", {"default": 1.0, "min": 0, "max": 3, "step": 0.05}),
             "qwen_steps": ("INT", {"default": 25, "min": 1, "max": 100}),
             "qwen_resolution": ("INT", {"default": 1024, "min": 512, "max": 2048, "step": 32}),
             "qwen_prompt": ("STRING", {"multiline": True, "default": ""}),
-            "edited_first_frame": ("IMAGE", {"tooltip": "Optional pre-edited frame; bypasses Qwen sampling"}),
-            "external_pose": ("IMAGE", {"tooltip": "Pose of the full source at its ORIGINAL FPS, or the exact conformed frame count"}),
-            "edit_mask": ("MASK", {"tooltip": "White=edit. One mask or original video length; Fun inpainting + output composite"}),
         })
         return {"required": required, "optional": optional}
 
-    def generate(self, ref_video, fun_controlnet, pose_checkpoint, qwen_model,
+    def generate(self, source_video, ref_image, fun_controlnet, pose_checkpoint, qwen_model,
                  qwen_text_encoder, qwen_vae, edit_mode, start_seconds=0.0, max_seconds=15.08,
                  pose_strength=1.0, qwen_steps=25, qwen_resolution=1024, qwen_prompt="",
-                 ref_image=None, edited_first_frame=None, external_pose=None, edit_mask=None, **kw):
+                 **kw):
         import torch
         import nodes
-        import comfy.utils
         from comfy_extras import nodes_minimax_h3 as h3, nodes_video, nodes_sdpose
         from .nodes_h3qwen import MiniMaxH3QwenKeyframeEdit
 
-        components = ref_video.get_components()
+        components = source_video.get_components()
         original = components.images[..., :3]
         fps = float(components.frame_rate)
         frames, indices = geometry.video_timeline(len(original), fps, start_seconds, max_seconds)
@@ -249,78 +244,54 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         index_tensor = torch.tensor(indices, device=original.device, dtype=torch.long)
         source = v2v.resize_frames(original[index_tensor], w, h)
 
-        if external_pose is None:
-            pose_model, _, pose_vae = self._load("pose", pose_checkpoint)
-            keypoints = args(nodes_sdpose.SDPoseKeypointExtractor.execute(
-                model=pose_model, vae=pose_vae, image=source, batch_size=4))[0]
-            pose = args(nodes_sdpose.SDPoseDrawKeypoints.execute(
-                keypoints=keypoints, draw_body=True, draw_hands=True, draw_face=True, draw_feet=True,
-                stick_width=4, face_point_size=3, score_threshold=0.3, draw_head=True))[0]
-        else:
-            if len(external_pose) == len(original):
-                external_pose = external_pose[index_tensor.to(external_pose.device)]
-            elif len(external_pose) != frames:
-                raise ValueError("External pose must match the original source length or the conformed H3 length")
-            pose = v2v.resize_frames(external_pose, w, h)
+        pose_model, _, pose_vae = self._load("pose", pose_checkpoint)
+        keypoints = args(nodes_sdpose.SDPoseKeypointExtractor.execute(
+            model=pose_model, vae=pose_vae, image=source, batch_size=4))[0]
+        pose = args(nodes_sdpose.SDPoseDrawKeypoints.execute(
+            keypoints=keypoints, draw_body=True, draw_hands=True, draw_face=True, draw_feet=True,
+            stick_width=4, face_point_size=3, score_threshold=0.3, draw_head=True))[0]
         if len(pose) != frames:
             raise ValueError("Pose extraction returned a different number of frames")
 
         instruction = kw["instruction"].strip()
-        if not instruction and ref_image is not None:
+        if not instruction:
             instruction = ("Replace only the source person's clothing with the outfit in the reference image; preserve their identity."
                            if edit_mode == "change clothes" else
                            "Replace the source person with the person in the reference image; preserve the source performance."
                            if edit_mode == "change person" else "")
         if not instruction:
-            raise ValueError("Write an edit instruction when no target reference image is connected")
-        if edited_first_frame is None:
-            # Separate loader instance: never replace cached H3 roles with Qwen weights.
-            qloader = _Pipeline()
-            qm = qloader._load("model", qwen_model)
-            qc = qloader._load("clip_qwen", qwen_text_encoder)
-            qv = qloader._load("vae", qwen_vae)
-            edit_text = qwen_prompt.strip() or (instruction +
-                " Image 1 is the source frame and defines pose, camera and background. " +
-                ("Image 2 is the target reference. " if ref_image is not None else "") +
-                "Change only the requested person or outfit. Keep the pose, framing and background of Image 1.")
-            qwen_images = [source[:1]] + ([ref_image[:1]] if ref_image is not None else [])
-            first = MiniMaxH3QwenKeyframeEdit._qwen_edit(qm, qc, qv, edit_text,
-                qwen_images, kw["seed"], qwen_steps, 1.0, "euler", "simple", qwen_resolution)
-            del qm, qc, qv, qloader
-        else:
-            first = edited_first_frame[:1]
+            raise ValueError("Write an edit instruction for custom edit mode")
+        # Qwen always edits the source first frame using the connected reference.
+        qloader = _Pipeline()
+        qm = qloader._load("model", qwen_model)
+        qc = qloader._load("clip_qwen", qwen_text_encoder)
+        qv = qloader._load("vae", qwen_vae)
+        edit_text = qwen_prompt.strip() or (instruction +
+            " Image 1 is the source frame and defines pose, camera and background. "
+            "Image 2 is the target reference. "
+            "Change only the requested person or outfit. Keep the pose, framing and background of Image 1.")
+        qwen_images = [source[:1], ref_image[:1]]
+        first = MiniMaxH3QwenKeyframeEdit._qwen_edit(qm, qc, qv, edit_text,
+            qwen_images, kw["seed"], qwen_steps, 1.0, "euler", "simple", qwen_resolution)
+        del qm, qc, qv, qloader
         first = v2v.resize_frames(first, w, h)
 
-        prompt = self._prompt(ref_image=ref_image[:1] if ref_image is not None else first,
-                              frames=frames, video=source, first_frame=first if ref_image is not None else None,
-                              **{**kw, "instruction": instruction,
-                                 "ref_image_1_as_first_frame": ref_image is None})
+        prompt = self._prompt(ref_image=ref_image[:1], frames=frames,
+                              video=source, first_frame=first, **{**kw, "instruction": instruction})
         model, clip, vae = self._base_models(**kw)
         positive, latent = args(h3.MiniMaxH3ReferenceToVideo.execute(
             clip=clip, vae=vae, audio_vae=None, prompt=prompt, width=w, height=h, length=frames,
             ref_image_size=kw.get("ref_image_size", "match"),
-            ref_images={"ref_image_0": ref_image[:1], "ref_image_1": first} if ref_image is not None else {"ref_image_0": first},
+            ref_images={"ref_image_0": ref_image[:1], "ref_image_1": first},
             ref_videos={"ref_video_0": source}, ref_video_audios=None, ref_audios=None))[:2]
         positive = args(h3.MiniMaxH3AddGuide.execute(positive=positive, latent=latent, frame_idx=0, vae=vae, image=first))[0]
-        mask = None
-        if edit_mask is not None:
-            if len(edit_mask) == len(original):
-                edit_mask = edit_mask[index_tensor.to(edit_mask.device)]
-            elif len(edit_mask) == 1:
-                edit_mask = edit_mask.expand(frames, -1, -1)
-            elif len(edit_mask) != frames:
-                raise ValueError("Edit mask must contain 1 frame, the source frame count, or the H3 frame count")
-            mask = comfy.utils.common_upscale(edit_mask[:, None], w, h, "bilinear", "center")[:, 0].clamp(0, 1)
         patch = self._load("patch", fun_controlnet)
         model = args(h3.MiniMaxH3FunControlNetApply.execute(
             model=model, model_patch=patch, vae=vae, strength=pose_strength,
-            start_percent=0.0, end_percent=1.0, control_video=pose, mask=mask, source_video=source))[0]
+            start_percent=0.0, end_percent=1.0, control_video=pose, source_video=source))[0]
         model = patch_video_only(model)
         images, _ = self._sample(model, positive, latent, vae, kw["seed"], kw["steps"], kw["sampler_name"], kw["scheduler"], silent=True)
         images = images[:frames]
-        if mask is not None:
-            m = mask[..., None].to(images.device)
-            images = images * m + source.to(images.device) * (1 - m)
         video = args(nodes_video.CreateVideo.execute(images=images, fps=24.0, audio=None))[0]
         return images, video, prompt, first, pose, w, h, frames
 

@@ -5,7 +5,7 @@ All-in-one ComfyUI nodes for **MiniMax H3 reference-to-video (R2V)** and **exper
 ## Features
 
 - R2V with one reference image and one reference audio clip.
-- V2V with a source video and one optional appearance reference image.
+- V2V with a source video and one required appearance reference image.
 - Qwen Image 2.1 editing of the source video's first frame.
 - Pose guidance with H3-compatible Fun ControlNet Union weights.
 - Local llama.cpp prompting with automatic GGUF discovery in `ComfyUI/models/LLM/`.
@@ -38,7 +38,6 @@ Configure llama.cpp and install the required models as described below, restart 
 |---|---|---|
 | [R2V image and audio](example_workflows/r2v_image_audio.json) | Reference image and audio | Video with audio |
 | [V2V with appearance reference](example_workflows/v2v_qwen_pose_silent.json) | Source video and reference image | Silent edited video |
-| [V2V with text instructions](example_workflows/v2v_video_only_input.json) | Source video | Silent edited video |
 
 Each workflow uses standard media loaders, one generation node, and Save Video. Model and sampler settings are configured inside the generation node.
 
@@ -62,7 +61,7 @@ Nodes labeled **Conditioning (Requires Sampler)** are separate advanced nodes an
 
 **Updating existing workflows:** the first two outputs have changed order to `images`, then `video`. Reconnect these sockets on existing generation nodes, or load the updated examples. The node class IDs and input settings remain the same.
 
-Try [V2V decoded IMAGE frames](example_workflows/v2v_decoded_images.json) for a minimal source-video → generation → Preview Image workflow.
+Try [V2V decoded IMAGE frames](example_workflows/v2v_decoded_images.json): source video + reference image → generation → Preview Image.
 
 ## R2V Generate
 
@@ -80,20 +79,29 @@ The node loads H3 ref2va, the H3 text encoder, video VAE and audio VAE. It write
 
 `Load Image + Load Video -> MiniMax H3 V2V Edit -> Save Video`
 
-Required reference asset: source VIDEO. One optional target image can guide appearance; without it, write the desired outfit/person in `instruction`. Qwen's primary image always comes from source frame 0. The source audio is ignored. There is no audio input, audio VAE loader, audio decode or audio output.
+Exactly two media inputs are required:
+
+| Input | Internal use |
+|---|---|
+| `source_video` (VIDEO) | Source frames, automatic pose extraction and Fun ControlNet motion guidance |
+| `ref_image` (IMAGE) | Target clothing/person reference supplied as Qwen Image Edit's second image |
+
+Qwen's first image is extracted automatically from source frame 0. Pose extraction, Qwen editing, Fun ControlNet, H3 sampling, and VAE Decode run inside the node. There are no external pose, edit mask, or pre-edited-frame input sockets. The source audio is ignored; the node has no audio input, audio VAE loader, audio decode, or audio output.
+
+After updating, recreate the V2V node or load the updated example. The source input is now named `source_video`, and both media inputs must be connected. The old `v2v_video_only_input.json` filename is retained for existing download links but now also requires a reference image.
 
 Internally:
 
 1. Select a segment and resample to 24 FPS. Snap DOWN to a valid `17k+5` frame count, capped at 362 frames. The end can be shortened by up to 16 frames (0.67 seconds); no repeated last frames are added. This preserves the sampled source timing instead of stretching it.
 2. Resize/crop the source to the selected canvas. `same as reference` follows the **source video's** aspect ratio in V2V, and the image's aspect ratio in R2V.
-3. Extract body, hands, face and feet pose using the selected native SDPose checkpoint. This automatic route uses full-frame single-person detection. For multiple people or higher precision, provide `external_pose` prepared from the same source. Its length must equal the original source frame count at its original FPS, or the already conformed H3 frame count.
-4. Qwen Image 2.1 edits source frame 0, optionally with one target image as its second reference input. Supplying `edited_first_frame` skips Qwen sampling.
+3. Extract body, hands, face and feet pose automatically from the source video using the selected native SDPose checkpoint. This uses full-frame single-person detection; multi-person videos may need a different workflow.
+4. Qwen Image 2.1 edits source frame 0 as Image 1, using the connected reference image as Image 2.
 5. llama.cpp writes an H3 `[video editing]` prompt, using source motion/camera and target appearance. The edited frame is anchored at frame 0.
-6. Load the H3 Fun ControlNet Union patch and apply pose control, optionally with an edit mask and source video for inpainting.
+6. Load the H3 Fun ControlNet Union patch and apply the pose extracted from the source video as motion control.
 7. Apply the **experimental video-only wrapper**: target audio is a zero-length token stream inside the H3 transformer. The sampler carries a zero audio placeholder only for native AV-container compatibility; its noise generator produces randomness only for video. Nothing is decoded or exported as audio.
-8. Sample and decode video, then return a VIDEO object with `audio=None`. With `edit_mask`, composite source pixels outside the mask back into the output.
+8. Sample and VAE-decode the generated frames. Return the decoded IMAGE batch and a VIDEO object with `audio=None`.
 
-`change clothes` preserves source identity and takes the reference outfit. `change person` takes target identity and preserves source performance. A custom instruction can describe either edit in Indonesian or English. Pose control improves motion adherence; exact pixel-level/person-motion equality is not guaranteed by a generative model. Full-frame edits can alter backgrounds; use a tracked mask for stronger preservation.
+`change clothes` preserves source identity and takes the reference outfit. `change person` takes target identity and preserves source performance. A custom instruction can describe either edit in Indonesian or English. Pose control improves motion adherence; exact pixel-level/person-motion equality is not guaranteed by a generative model. Full-frame edits can alter backgrounds.
 
 ### Required model files (examples)
 
