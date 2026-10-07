@@ -57,9 +57,9 @@ Internally:
 
 1. Read the supplied 24 FPS IMAGE batch and select a segment. Snap DOWN to a valid `17k+5` frame count, capped at 362 frames. The end can be shortened by up to 16 frames (0.67 seconds); no repeated last frames are added. This preserves the sampled source timing instead of stretching it.
 2. Resize/crop the source to the selected canvas. `same as reference` follows the **source video's** aspect ratio in V2V, and the image's aspect ratio in R2V.
-3. Extract body, hands, face and feet pose automatically from the source video using the selected native SDPose checkpoint. This uses full-frame single-person detection; multi-person videos may need a different workflow.
-4. Qwen Image 2.1 edits source frame 0 as Image 1, using the connected reference image as Image 2.
-5. llama.cpp writes an H3 `[video editing]` prompt, using source motion/camera and target appearance. The edited frame is anchored at frame 0.
+3. Enhance the single user instruction into Qwen and MiniMax prompts, then extract body, hands, face and feet pose automatically from the source video using an automatically detected native SDPose checkpoint. This uses full-frame single-person detection; multi-person videos may need a different workflow.
+4. Using the Qwen prompt prepared by the shared enhancer, Qwen Image 2.1 edits source frame 0 as Image 1 with the connected reference image as Image 2.
+5. Use the MiniMax prompt prepared by the shared enhancer. Anchor the Qwen-edited frame at frame 0.
 6. Load the H3 Fun ControlNet Union patch and apply the pose extracted from the source video as motion control.
 7. Apply the **experimental video-only wrapper**: target audio is a zero-length token stream inside the H3 transformer. The sampler carries a zero audio placeholder only for native AV-container compatibility; its noise generator produces randomness only for video. Nothing is decoded or exported as audio.
 8. Sample and VAE-decode the generated frames. Return a single IMAGE batch; no audio is generated, decoded, or returned.
@@ -79,6 +79,25 @@ Internally:
 
 Use the Qwen **2.1** diffusion model, encoder and VAE together. Older Qwen Image/Edit models are different architectures. The H3 text encoder and the prompter GGUF are separate models. This internal H3 loader supports native safetensors; diffusion-model GGUF loaders are not included.
 
+## One instruction for Qwen and MiniMax
+
+V2V exposes one `instruction` field. For example: **"Change her clothes to this"**, with the target outfit connected to `ref_image`.
+
+Before diffusion sampling, the selected vision GGUF reads the source first frame, the reference image and sampled source-motion frames through llama.cpp. A single enhancement response contains two internal strings:
+
+- `qwen_prompt`: an editing directive using `<image1>` for the source first frame and `<image2>` for the reference.
+- `minimax_prompt`: the six-section H3 video-editing prompt, preserving source performance and using the intended edited frame as its frame-0 guide.
+
+These are internal values, not separate user prompt fields or output sockets. The enhancer runs before Qwen generates the edited frame. The MiniMax prompt describes the planned edit; it does not claim to inspect a result that has not been generated yet.
+
+Qwen editing rules are adapted from the [official edit enhancer system prompt](https://github.com/QwenLM/Qwen-Image-2.1/blob/main/prompt_rewrite/prompts/system_prompt_edit.txt). Qwen also publishes [PE-I2I weights](https://huggingface.co/Qwen/Qwen-Image-2.1-PE-I2I); this node uses your selected llama.cpp vision model with adapted instructions, rather than requiring those specific weights.
+
+The prompt enhancer requires working vision support and a matching mmproj. Malformed or incomplete responses stop with an error instead of silently using an unrelated prompt.
+
+### Automatic pose checkpoint selection
+
+The node internally finds an SDPose whole-body checkpoint under `ComfyUI/models/checkpoints/`, preferring FP16. Install `sdpose_wholebody_fp16.safetensors` there. There is no pose checkpoint dropdown; SAM/SAM3 checkpoints are never selected. If SDPose is missing, the node reports the required file.
+
 ## Resolution and aspect ratio
 
 Presets: 360p, 480p, native 768p. All canvases use multiples of 32. `360p` means a 352px short edge. Native 768p follows core H3's `768*1344` area cap; ultrawide presets can have a shorter edge.
@@ -94,7 +113,7 @@ Also available: 1:1, 4:3, 3:4, 3:2, 2:3, 21:9, same as reference, custom. Set cu
 ## Prompt controls and memory
 
 - `additional_system_prompt` appends user system instructions to the official-format system prompt. Node-level policies still enforce the first-frame option and V2V's audio-free prompt fields.
-- `prompt_override` skips the LLM and must contain the six official sections in order. Truncated or incorrectly formatted responses fail visibly rather than being passed silently to H3.
+- R2V only: `prompt_override` skips the LLM and must contain the six official sections in order. Truncated or incorrectly formatted responses fail visibly rather than being passed silently to H3.
 - The managed llama-server is stopped after prompting by default to release VRAM. An external server is never stopped automatically. Before prompting, GPU-resident ComfyUI models are unloaded so the external LLM can load; ComfyUI reloads models when needed.
 - Node outputs include the written prompt, actual canvas size/frame count, and V2V's edited frame/pose batch for inspection.
 - These additions do not replace or change the existing prompter, I2V, V2V or Qwen keyframe nodes.

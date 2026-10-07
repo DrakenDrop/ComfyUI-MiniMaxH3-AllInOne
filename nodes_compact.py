@@ -205,31 +205,146 @@ class MiniMaxH3V2VGenerate(_Pipeline):
     RETURN_NAMES = ("images",)
     DESCRIPTION = "Source IMAGE batch (24 FPS) + reference IMAGE -> Qwen Image 2.1 first-frame edit -> pose/Fun ControlNet -> H3 sampler -> VAE Decode IMAGE frames. No audio generation or debug outputs. Video-only denoising is experimental."
 
+
+    @staticmethod
+    def _pose_checkpoint():
+        """Resolve a whole-body SDPose checkpoint; never select unrelated SAM models."""
+        import folder_paths
+        files = [name for name in folder_paths.get_filename_list("checkpoints")
+                 if "sdpose" in os.path.basename(name).lower()
+                 and "wholebody" in os.path.basename(name).lower()]
+        if not files:
+            raise FileNotFoundError(
+                "Automatic pose extraction requires sdpose_wholebody_fp16.safetensors "
+                "in ComfyUI/models/checkpoints/. SAM/SAM3 models are not compatible.")
+        return sorted(files, key=lambda name: ("fp16" not in name.lower(), name.lower()))[0]
+
+    def _enhance_edit(self, source, reference, instruction, frames, **kw):
+        """One user instruction -> one vision enhancement response containing both prompts."""
+        import json
+        import re
+        import comfy.model_management
+        from .h3_prompter import media, llama_client as lc, prompts
+
+        model_path, mmproj_path = local_models.resolve(kw["llm_model"], kw["mmproj"], CFG)
+        if model_path and mmproj_path is None:
+            raise ValueError("V2V prompt enhancement needs a vision GGUF and its matching mmproj.")
+        comfy.model_management.unload_all_models()
+        if model_path:
+            server_url = managed_server.ensure(model_path, mmproj_path, kw.get("context_size", 32768), CFG)
+            alias = os.path.splitext(os.path.basename(model_path))[0]
+        else:
+            server_url = (kw.get("server_url") or CFG["server_url"]).strip()
+            lc.ensure_server(server_url, CFG)
+            alias = CFG.get("model_alias", "qwen3.8-27b")
+
+        # Editing rules adapted from Qwen's official system_prompt_edit.txt.
+        system = (
+            "Prepare coordinated prompts for a silent video edit from ONE user instruction. "
+            "Return a JSON object with exactly two string fields: qwen_prompt and minimax_prompt. "
+            "For qwen_prompt use <image1> for the source first frame (the canvas), and <image2> "
+            "for the supplied appearance reference. State the requested operation clearly, "
+            "identify each image's role, and preserve attributes the user did not request to edit. "
+            "Base details on visible evidence; do not invent garment colors, patterns or identity. "
+            "For a clothing change transfer clothing only, preserving the source person's face, "
+            "body, pose, accessories not targeted by the request, camera, light and background. "
+            "For a person change preserve source pose, composition and background while transferring "
+            "the requested identity. Write English prose unless the request is Chinese. "
+            "Do not include video motion instructions in qwen_prompt. "
+            "For minimax_prompt follow the H3 format below. Its asset labels DIFFER from Qwen: "
+            "<Video 1> is the source performance; <Picture 1> is the supplied appearance reference; "
+            "<Picture 2> will be the Qwen-edited first frame, anchored at frame 0. "
+            "Picture 2 has not been generated yet: describe its intended role, not invented observations. "
+            "The target appearance must exist from frame 0 throughout the clip, not transform gradually. "
+            "Preserve source timing, actions, camera and shots. Do not invent motion or sound. "
+            "Use [video editing]; set overall_soundscape and non_diegetic_music to N/A. "
+            "Do not use <Audio N> or Qwen <imageN> labels in minimax_prompt.\n\n"
+            "H3 formatting rules (apply ONLY inside the minimax_prompt string):\n"
+            + prompts.SYSTEM_PROMPT_R2V
+        )
+        extra = str(kw.get("additional_system_prompt", "")).strip()
+        if extra:
+            system += "\n\nAdditional user preferences:\n" + extra
+        system += (
+            "\n\nResponse envelope: output only JSON {"
+            "\"qwen_prompt\":\"...\",\"minimax_prompt\":\"...\"}. "
+            "The minimax_prompt string contains all six H3 sections in order. "
+            "The qwen_prompt string uses both <image1> and <image2>. No Markdown fences."
+        )
+        parts = [{"type": "text", "text": (
+            f"User instruction: {instruction}\nEdit mode: {kw['edit_mode']}\n"
+            f"Video: {frames} frames at 24 FPS ({frames / 24:.3f} seconds). "
+            "The word 'this' refers to the supplied reference <image2>. "
+            "The source frame supplies the person and composition to edit."
+        )}]
+        # Source motion context is labeled separately from the two Qwen image slots.
+        for i in media.sample_indices(len(source), 8):
+            parts.extend([
+                {"type": "text", "text": f"<Video 1> source motion frame at {i / 24:.3f} seconds:"},
+                {"type": "image_url", "image_url": {"url": media.pil_to_data_url(
+                    media.image_batch_to_pil(source[i:i + 1])[0], 512)}},
+            ])
+        for label, tensor in (("<image1>: source first frame, canvas for Qwen.", source[:1]),
+                              ("<image2>: target reference, also H3 <Picture 1>.", reference)):
+            parts.extend([
+                {"type": "text", "text": label},
+                {"type": "image_url", "image_url": {"url": media.pil_to_data_url(
+                    media.image_batch_to_pil(tensor)[0], 768)}},
+            ])
+        base = dict(model=alias, max_tokens=int(kw.get("max_tokens", 3072)),
+                    seed=int(kw["seed"]) % (2**32), temperature=0.2, top_p=0.8,
+                    top_k=20, cache_prompt=True, response_format={"type": "json_object"})
+        try:
+            content, _, _ = prompter.MiniMaxH3R2VPrompter._run(
+                server_url, base, {"role": "system", "content": system},
+                {"role": "user", "content": parts}, "off",
+                float(CFG.get("request_timeout_seconds", 600)), False, None, prefill=None)
+        finally:
+            if kw.get("unload_llm_after_prompt", True) and model_path:
+                managed_server.stop(CFG)
+        try:
+            result = json.loads(content)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("Prompt enhancement did not return complete JSON; check max_tokens and the vision model.") from exc
+        if not isinstance(result, dict) or set(result) != {"qwen_prompt", "minimax_prompt"}:
+            raise ValueError("Enhancer must return qwen_prompt and minimax_prompt.")
+        qwen, minimax = result["qwen_prompt"], result["minimax_prompt"]
+        if not isinstance(qwen, str) or not qwen.strip() or not isinstance(minimax, str) or not minimax.strip():
+            raise ValueError("Both enhanced prompts must be non-empty strings.")
+        if "<image1>" not in qwen or "<image2>" not in qwen:
+            raise ValueError("Qwen prompt must reference <image1> (source) and <image2> (target).")
+        if re.search(r"<image\s*\d+>", minimax, re.I):
+            raise ValueError("MiniMax prompt contains Qwen image labels.")
+        minimax = apply_policy(minimax, silent=True)
+        if not all(tag in minimax for tag in ("<Video 1>", "<Picture 1>", "<Picture 2>")):
+            raise ValueError("MiniMax prompt must reference source video, appearance reference, and edited first frame.")
+        lc.log("One instruction enhanced into Qwen and MiniMax prompts.")
+        return qwen.strip(), minimax
+
     @classmethod
     def INPUT_TYPES(cls):
         required = {"source_video": ("IMAGE", {"tooltip": "Source video frames as an IMAGE batch at 24 FPS, matching the native H3 ref_video input. Connect a video loader IMAGE output."}), "ref_image": ("IMAGE",), **common_inputs()}
         required.update({
             "fun_controlnet": (choices("model_patches", ["minimax_h3_fun"]),),
-            "pose_checkpoint": (choices("checkpoints", ["sdpose"]),),
             "qwen_model": (choices("diffusion_models", ["qwen_image_2.1", "qwen_image21", "qwen_image_21"]),),
             "qwen_text_encoder": (choices("text_encoders", ["qwen3vl_8b", "qwen3_vl_8b", "qwen_image_2.1", "qwen3_vl", "qwen3vl"]),),
             "qwen_vae": (choices("vae", ["qwen_image_2.1", "qwen_image21", "qwen_image"]),),
             "edit_mode": (["change clothes", "change person", "custom"], {"default": "change clothes"}),
         })
         optional = extra_inputs()
+        optional.pop("prompt_override", None)
         optional.update({
             "start_seconds": ("FLOAT", {"default": 0.0, "min": 0, "max": 3600}),
             "max_seconds": ("FLOAT", {"default": 15.08, "min": 0.21, "max": 15.08}),
             "pose_strength": ("FLOAT", {"default": 1.0, "min": 0, "max": 3, "step": 0.05}),
             "qwen_steps": ("INT", {"default": 25, "min": 1, "max": 100}),
             "qwen_resolution": ("INT", {"default": 1024, "min": 512, "max": 2048, "step": 32}),
-            "qwen_prompt": ("STRING", {"multiline": True, "default": ""}),
         })
         return {"required": required, "optional": optional}
 
-    def generate(self, source_video, ref_image, fun_controlnet, pose_checkpoint, qwen_model,
+    def generate(self, source_video, ref_image, fun_controlnet, qwen_model,
                  qwen_text_encoder, qwen_vae, edit_mode, start_seconds=0.0, max_seconds=15.08,
-                 pose_strength=1.0, qwen_steps=25, qwen_resolution=1024, qwen_prompt="",
+                 pose_strength=1.0, qwen_steps=25, qwen_resolution=1024,
                  **kw):
         import torch
         import nodes
@@ -246,6 +361,16 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         index_tensor = torch.tensor(indices, device=original.device, dtype=torch.long)
         source = v2v.resize_frames(original[index_tensor], w, h)
 
+        instruction = kw["instruction"].strip()
+        if not instruction:
+            instruction = ("Replace only the source person's clothing with the outfit in the reference image; preserve their identity."
+                           if edit_mode == "change clothes" else
+                           "Replace the source person with the person in the reference image; preserve the source performance."
+                           if edit_mode == "change person" else "")
+        if not instruction:
+            raise ValueError("Write an edit instruction for custom edit mode")
+        pose_checkpoint = self._pose_checkpoint()
+        qwen_prompt, prompt = self._enhance_edit(source, ref_image[:1], frames=frames, **{**kw, "instruction": instruction, "edit_mode": edit_mode})
         pose_model, _, pose_vae = self._load("pose", pose_checkpoint)
         keypoints = args(nodes_sdpose.SDPoseKeypointExtractor.execute(
             model=pose_model, vae=pose_vae, image=source, batch_size=4))[0]
@@ -255,31 +380,18 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         if len(pose) != frames:
             raise ValueError("Pose extraction returned a different number of frames")
 
-        instruction = kw["instruction"].strip()
-        if not instruction:
-            instruction = ("Replace only the source person's clothing with the outfit in the reference image; preserve their identity."
-                           if edit_mode == "change clothes" else
-                           "Replace the source person with the person in the reference image; preserve the source performance."
-                           if edit_mode == "change person" else "")
-        if not instruction:
-            raise ValueError("Write an edit instruction for custom edit mode")
         # Qwen always edits the source first frame using the connected reference.
         qloader = _Pipeline()
         qm = qloader._load("model", qwen_model)
         qc = qloader._load("clip_qwen", qwen_text_encoder)
         qv = qloader._load("vae", qwen_vae)
-        edit_text = qwen_prompt.strip() or (instruction +
-            " Image 1 is the source frame and defines pose, camera and background. "
-            "Image 2 is the target reference. "
-            "Change only the requested person or outfit. Keep the pose, framing and background of Image 1.")
+        edit_text = qwen_prompt
         qwen_images = [source[:1], ref_image[:1]]
         first = MiniMaxH3QwenKeyframeEdit._qwen_edit(qm, qc, qv, edit_text,
             qwen_images, kw["seed"], qwen_steps, 1.0, "euler", "simple", qwen_resolution)
         del qm, qc, qv, qloader
         first = v2v.resize_frames(first, w, h)
 
-        prompt = self._prompt(ref_image=ref_image[:1], frames=frames,
-                              video=source, first_frame=first, **{**kw, "instruction": instruction})
         model, clip, vae = self._base_models(**kw)
         positive, latent = args(h3.MiniMaxH3ReferenceToVideo.execute(
             clip=clip, vae=vae, audio_vae=None, prompt=prompt, width=w, height=h, length=frames,
