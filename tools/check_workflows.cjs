@@ -57,10 +57,10 @@ for (const file of fs.readdirSync(path.join(root, 'example_workflows')).filter(f
 const compact = fs.readFileSync(path.join(root, 'nodes_compact.py'), 'utf8');
 assert(!compact.slice(compact.indexOf('class MiniMaxH3V2VGenerate')).includes('nodes_video'));
 assert(compact.includes('return images, qwen_image, prompt, qwen_prompt'));
-assert(compact.includes('silent=strict_video_only'));
+assert(compact.includes('silent=strict_video_only, timer=timer'));
 assert(compact.includes('control_video=source'));
 assert(!compact.includes('nodes_sdpose'));
-assert(compact.includes('qwen_images = [source[:1], ref_image[:1]]'));
+assert(compact.includes('qwen_images = [source[:1], reference[:1]]'));
 assert(compact.includes('ref_images={"ref_image_0": qwen_image}'));
 assert(!compact.slice(compact.indexOf('class MiniMaxH3V2VGenerate')).includes('MiniMaxH3AddGuide.execute'));
 assert(!/external_pose|edit_mask|edited_first_frame/.test(compact));

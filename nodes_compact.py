@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 from . import nodes as prompter
-from .h3_prompter import canvas as geometry, local_models, managed_server, v2v
+from .h3_prompter import canvas as geometry, local_models, managed_server, v2v, performance as perf
 from .h3_prompter.video_only import patch_video_only, VideoOnlyNoise
 from .h3_prompter.prompt_format import apply_policy, parse_edit_response_with_repair
 
@@ -128,7 +128,7 @@ class _Pipeline:
         return apply_policy(prompt, first_frame=bool(unused.get("ref_image_1_as_first_frame", False)),
                             silent=video is not None, style=minimax_prompt_style)
 
-    def _sample(self, model, positive, latent, video_vae, seed, steps, sampler_name, scheduler, silent=False):
+    def _sample(self, model, positive, latent, video_vae, seed, steps, sampler_name, scheduler, silent=False, timer=None):
         import comfy.samplers
         from comfy_extras import nodes_custom_sampler as cs
         import nodes
@@ -137,7 +137,11 @@ class _Pipeline:
         noise = VideoOnlyNoise(seed) if silent else cs.Noise_RandomNoise(seed)
         sampled = args(cs.SamplerCustomAdvanced.execute(
             noise, guider, comfy.samplers.sampler_object(sampler_name), sigmas, latent))[0]
+        if timer is not None:
+            timer.mark("h3_sampling")
         images = nodes.VAEDecode().decode(video_vae, sampled)[0]
+        if timer is not None:
+            timer.mark("vae_decode")
         return images, sampled
 
     def _base_models(self, h3_model, h3_text_encoder, h3_video_vae, lora_name=NONE, lora_strength=1.0, **unused):
@@ -215,14 +219,9 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         model_path, mmproj_path = local_models.resolve(kw["llm_model"], kw["mmproj"], CFG)
         if model_path and mmproj_path is None:
             raise ValueError("V2V prompt enhancement needs a vision GGUF and its matching mmproj.")
-        comfy.model_management.unload_all_models()
-        if model_path:
-            server_url = managed_server.ensure(model_path, mmproj_path, kw.get("context_size", 32768), CFG)
-            alias = os.path.splitext(os.path.basename(model_path))[0]
-        else:
-            server_url = (kw.get("server_url") or CFG["server_url"]).strip()
-            lc.ensure_server(server_url, CFG)
-            alias = CFG.get("model_alias", "qwen3.8-27b")
+        # Assemble the exact request before unloading ComfyUI models or starting llama.cpp.
+        server_url = (kw.get("server_url") or CFG["server_url"]).strip()
+        alias = os.path.splitext(os.path.basename(model_path))[0] if model_path else CFG.get("model_alias", "qwen3.8-27b")
 
         style = kw.get("minimax_prompt_style", "official")
         if style not in ("official", "simple"):
@@ -295,6 +294,30 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         base = dict(model=alias, max_tokens=int(kw.get("max_tokens", 3072)),
                     seed=int(kw["seed"]) % (2**32), temperature=0.2, top_p=0.8,
                     top_k=20, cache_prompt=True, response_format={"type": "json_object"})
+        if not hasattr(self, "_enhancer_result_cache"):
+            self._enhancer_result_cache = perf.SingleEntryCache()
+        cache = self._enhancer_result_cache
+        # External servers can hot-swap models without changing their URL: always query them.
+        reuse = kw.get("reuse_preprocessing", True) and model_path is not None
+        key = None
+        if reuse:
+            key = perf.request_key(system, parts, base, kw.get("context_size", 32768), CFG,
+                                   perf.file_stamp(model_path), perf.file_stamp(mmproj_path))
+            cached = cache.get(key)
+            if cached is not None:
+                lc.log("V2V cache: enhancer hit; skipping model unloading and llama.cpp inference.")
+                if kw.get("unload_llm_after_prompt", True):
+                    managed_server.stop(CFG)
+                return cached
+        else:
+            cache.clear()
+        lc.log("V2V cache: enhancer miss." if reuse else "V2V cache: enhancer disabled (or external server).")
+        comfy.model_management.unload_all_models()
+        if model_path:
+            server_url = managed_server.ensure(model_path, mmproj_path, kw.get("context_size", 32768), CFG)
+        else:
+            lc.ensure_server(server_url, CFG)
+
         def request(request_parts):
             return prompter.MiniMaxH3R2VPrompter._run(
                 server_url, base, {"role": "system", "content": system},
@@ -315,8 +338,50 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         finally:
             if kw.get("unload_llm_after_prompt", True) and model_path:
                 managed_server.stop(CFG)
+        if reuse:
+            cache.put(key, (qwen.strip(), minimax))
         lc.log("One instruction enhanced into Qwen and MiniMax prompts.")
         return qwen.strip(), minimax
+
+
+    def _cached_qwen_edit(self, source, reference, prompt, seed, model_name, encoder_name,
+                          vae_name, lora_name, lora_strength, steps, resolution, reuse):
+        import folder_paths
+        import nodes
+        from .nodes_h3qwen import MiniMaxH3QwenKeyframeEdit
+        from .h3_prompter import llama_client as lc
+
+        if not hasattr(self, "_qwen_result_cache"):
+            self._qwen_result_cache = perf.SingleEntryCache()
+        cache = self._qwen_result_cache
+        qwen_images = [source[:1], reference[:1]]
+        key = None
+        if reuse:
+            files = [("diffusion_models", model_name), ("text_encoders", encoder_name), ("vae", vae_name)]
+            if lora_name != NONE and lora_strength != 0:
+                files.append(("loras", lora_name))
+            stamps = [perf.file_stamp(folder_paths.get_full_path_or_raise(kind, name)) for kind, name in files]
+            key = perf.request_key(stamps, [perf.image_key(im) for im in qwen_images],
+                                   prompt, int(seed), steps, resolution, lora_name, lora_strength,
+                                   "euler", "simple", 1.0)
+            cached = cache.get(key)
+            if cached is not None:
+                lc.log("V2V cache: Qwen hit; skipping Qwen loaders, encoding, sampling and decode.")
+                return cached.clone()
+        else:
+            cache.clear()
+        lc.log("V2V cache: Qwen miss." if reuse else "V2V cache: Qwen disabled.")
+        qloader = _Pipeline()
+        qm = qloader._load("model", model_name)
+        if lora_name != NONE and lora_strength != 0:
+            qm = nodes.LoraLoaderModelOnly().load_lora_model_only(qm, lora_name, lora_strength)[0]
+        qc = qloader._load("clip_qwen", encoder_name)
+        qv = qloader._load("vae", vae_name)
+        image = MiniMaxH3QwenKeyframeEdit._qwen_edit(qm, qc, qv, prompt,
+            qwen_images, seed, steps, 1.0, "euler", "simple", resolution)
+        if reuse:
+            cache.put(key, image.detach().cpu().clone())
+        return image
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -342,6 +407,7 @@ class MiniMaxH3V2VGenerate(_Pipeline):
             "qwen_lora_name": (choices("loras", ["qwen"], optional=True), {"tooltip": "LoRA for the Qwen Image 2.1 diffusion model only, loaded from models/loras. Select (none) to disable."}),
             "qwen_lora_strength": ("FLOAT", {"default": 1.0, "min": 0, "max": 2, "step": 0.05, "tooltip": "Strength of the Qwen image-edit LoRA; 0 disables it."}),
             "h3_sampling_mode": (["strict video-only (experimental)", "native AV (discard audio)"], {"default": "strict video-only (experimental)", "tooltip": "Native AV matches the reference sampler but internally denoises audio latents; audio is never decoded or returned. Strict removes audio tokens and can change visual quality."}),
+            "reuse_preprocessing": ("BOOLEAN", {"default": True, "tooltip": "Reuse the last identical managed-LLM request and Qwen edit in this node. Holds one CPU image, not model weights. Disable to force fresh preprocessing; changing seed invalidates both caches."}),
         })
         return {"required": required, "optional": optional}
 
@@ -349,12 +415,13 @@ class MiniMaxH3V2VGenerate(_Pipeline):
                  qwen_text_encoder, qwen_vae, edit_mode, start_seconds=0.0, max_seconds=15.08,
                  control_strength=1.0, qwen_steps=25, qwen_resolution=1024,
                  qwen_lora_name=NONE, qwen_lora_strength=1.0,
-                 h3_sampling_mode="strict video-only (experimental)", **kw):
+                 h3_sampling_mode="strict video-only (experimental)", reuse_preprocessing=True, **kw):
         import torch
         import nodes
         from comfy_extras import nodes_minimax_h3 as h3
-        from .nodes_h3qwen import MiniMaxH3QwenKeyframeEdit
+        from .h3_prompter import llama_client as lc
 
+        timer = perf.StageTimer(lc.log)
         if source_video.ndim != 4 or source_video.shape[-1] < 3 or len(source_video) == 0:
             raise ValueError("source_video must be a non-empty IMAGE batch [frames, height, width, RGB] at 24 FPS")
         if h3_sampling_mode not in ("strict video-only (experimental)", "native AV (discard audio)"):
@@ -365,8 +432,7 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         fps = 24.0
         frames, indices = geometry.video_timeline(len(original), fps, start_seconds, max_seconds)
         w, h = geometry.canvas(kw["resolution"], kw["aspect_ratio"], original.shape[2], original.shape[1], kw["custom_aspect"])
-        index_tensor = torch.tensor(indices, device=original.device, dtype=torch.long)
-        source = v2v.resize_frames(original[index_tensor], w, h)
+        source = v2v.resize_frames(perf.take_frames(original, indices), w, h)
 
         instruction = kw["instruction"].strip()
         if not instruction:
@@ -376,32 +442,27 @@ class MiniMaxH3V2VGenerate(_Pipeline):
                            if edit_mode == "change person" else "")
         if not instruction:
             raise ValueError("Write an edit instruction for custom edit mode")
-        qwen_prompt, prompt = self._enhance_edit(source, ref_image[:1], frames=frames, **{**kw, "instruction": instruction, "edit_mode": edit_mode})
-        # Qwen always edits the source first frame using the connected reference.
-        qloader = _Pipeline()
-        qm = qloader._load("model", qwen_model)
-        if qwen_lora_name != NONE and qwen_lora_strength != 0:
-            qm = nodes.LoraLoaderModelOnly().load_lora_model_only(
-                qm, qwen_lora_name, qwen_lora_strength)[0]
-        qc = qloader._load("clip_qwen", qwen_text_encoder)
-        qv = qloader._load("vae", qwen_vae)
-        edit_text = qwen_prompt
-        qwen_images = [source[:1], ref_image[:1]]
-        qwen_image = MiniMaxH3QwenKeyframeEdit._qwen_edit(qm, qc, qv, edit_text,
-            qwen_images, kw["seed"], qwen_steps, 1.0, "euler", "simple", qwen_resolution)
-        del qm, qc, qv, qloader
+        timer.mark("prepare_frames")
+        qwen_prompt, prompt = self._enhance_edit(source, ref_image[:1], frames=frames,
+            **{**kw, "instruction": instruction, "edit_mode": edit_mode, "reuse_preprocessing": reuse_preprocessing})
+        timer.mark("enhancer")
+        qwen_image = self._cached_qwen_edit(source, ref_image, qwen_prompt, kw["seed"],
+            qwen_model, qwen_text_encoder, qwen_vae, qwen_lora_name, qwen_lora_strength,
+            qwen_steps, qwen_resolution, reuse_preprocessing)
+        timer.mark("qwen_edit")
 
         model, clip, vae = self._base_models(**kw)
+        timer.mark("h3_model_load")
         positive, latent = args(h3.MiniMaxH3ReferenceToVideo.execute(
             clip=clip, vae=vae, audio_vae=None, prompt=prompt, width=w, height=h, length=frames,
             ref_image_size=kw.get("ref_image_size", "max"),
             ref_images={"ref_image_0": qwen_image},
             ref_videos={"ref_video_0": source}, ref_video_audios=None, ref_audios=None))[:2]
+        timer.mark("h3_conditioning")
         patch = self._load("patch", fun_controlnet)
         model = args(h3.MiniMaxH3FunControlNetApply.execute(
             model=model, model_patch=patch, vae=vae, strength=control_strength,
             start_percent=0.0, end_percent=1.0, control_video=source))[0]
-        from .h3_prompter import llama_client as lc
         lc.log(f"V2V H3 config: mode={h3_sampling_mode}; model={kw.get('h3_model')}; "
                f"clip={kw.get('h3_text_encoder')}; vae={kw.get('h3_video_vae')}; "
                f"lora={kw.get('lora_name', NONE)}@{kw.get('lora_strength', 1.0)}; "
@@ -412,8 +473,10 @@ class MiniMaxH3V2VGenerate(_Pipeline):
                "references=Qwen image + source video; frame_guide=none")
         if strict_video_only:
             model = patch_video_only(model)
-        images, _ = self._sample(model, positive, latent, vae, kw["seed"], kw["steps"], kw["sampler_name"], kw["scheduler"], silent=strict_video_only)
+        timer.mark("control_setup")
+        images, _ = self._sample(model, positive, latent, vae, kw["seed"], kw["steps"], kw["sampler_name"], kw["scheduler"], silent=strict_video_only, timer=timer)
         images = images[:frames]
+        timer.finish()
         return images, qwen_image, prompt, qwen_prompt
 
 

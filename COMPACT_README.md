@@ -204,11 +204,23 @@ Discovery also applies when configured external-server `autostart` is enabled. S
 
 After updating, restart ComfyUI. Existing workflow widgets retain their selected values. The console logs a `V2V H3 config:` line with the actual model, encoder, VAE, H3 LoRA, sampling mode, sampler, scheduler, steps, seed, canvas, frame count and control settings. Share this line and the current workflow when comparing a failed render with a working one. A prompt alone cannot establish which sampling path or checkpoint ran, and fixing prompt wording is not proof that visual artifacts are resolved.
 
+## V2V performance
+
+`reuse_preprocessing` defaults to **true**. Each V2V node retains its last successful managed-llama.cpp prompt pair and one decoded Qwen image in CPU memory. It does not retain additional Qwen model weights or video latents. Identical prompt requests skip llama.cpp inference and the preceding ComfyUI model unload; identical Qwen inputs skip its loaders, encoding, sampling and decode.
+
+The enhancer key includes the exact image/text request, generation parameters, configuration, and GGUF/mmproj file metadata (all shards for split GGUFs). External-server prompt results are not cached because the server can change models without changing its URL. The Qwen key includes every pixel of its two input images, prompt, seed, model/encoder/VAE and LoRA file metadata, steps, and resolution. Set `reuse_preprocessing=false` to clear/bypass both caches. Caches disappear when the node is recreated or ComfyUI restarts.
+
+This mainly helps when rerunning with different **H3** sampler, steps, control strength, or model while preprocessing inputs stay identical. Changing the shared seed reruns both stages. First renders and changed inputs still perform their full preprocessing; no GPU speedup factor has been measured. Contiguous source clips also use a tensor view to avoid an unnecessary full-video copy.
+
+The console prints `V2V timing:` per stage and a `V2V timing total:` summary: frame preparation, enhancer, Qwen edit, H3 loading, conditioning, control setup, H3 sampling, and VAE decode. These are wall-clock measurements without forced GPU synchronization, so asynchronous work may cross stage boundaries. Sampling includes lazy Fun ControlNet encoding/loading. The total covers this node, not video loading or final video encoding.
+
+Keep the working model, scheduler, steps and resolution for the first timing comparison. If a managed llama.cpp server shares the generation GPU, `unload_llm_after_prompt=true` stops that server after enhancement and releases its allocation before diffusion; the next cache hit avoids restarting it. This setting does not stop an external server. Share the timing summary, GPU/VRAM, and offloading log before deciding on attention, quantization, or model changes.
+
 ## Validation status
 
 API signatures and model filenames were checked against current official ComfyUI and Qwen sources. Workflow graph consistency is checked by `tools/check_workflows.cjs`. Unit tests cover canvas sizing, temporal sampling, first-frame prompt policy, audio-tag rejection and the zero-audio-token wrapper contract: `python -m unittest discover -s tests -v`.
 
-Python syntax checks, all 21 unit tests (including discovery, prompt-format regressions, and native/strict V2V routing), and the workflow graph checks pass. End-to-end generation has **not** been run because no ComfyUI GPU runtime is available here. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
+Python syntax checks, all 29 unit tests (including discovery, prompt-format regressions, and native/strict V2V routing), and the workflow graph checks pass. End-to-end generation has **not** been run because no ComfyUI GPU runtime is available here. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
 
 The example workflows were built using public official templates as integration references. They have not been validated through end-to-end generation.
 

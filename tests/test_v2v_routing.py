@@ -1,5 +1,6 @@
 """CPU routing tests; these do not assess generated image quality."""
 import ast
+import importlib.util
 from pathlib import Path
 import sys
 import types
@@ -7,6 +8,10 @@ import unittest
 from unittest.mock import Mock, patch
 
 SOURCE = Path(__file__).resolve().parents[1] / "nodes_compact.py"
+
+spec = importlib.util.spec_from_file_location("perf", SOURCE.parent / "h3_prompter/performance.py")
+perf = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(perf)
 
 class Tensor:
     def __init__(self, label, count=22, width=768, height=1344):
@@ -35,6 +40,7 @@ class V2VRoutingTests(unittest.TestCase):
         modules = {
             "torch": types.SimpleNamespace(tensor=lambda value, **kw: value, long=object()),
             "nodes": types.SimpleNamespace(),
+            "folder_paths": types.SimpleNamespace(),
             "comfy_extras": types.SimpleNamespace(nodes_minimax_h3=h3),
             "routing_pkg.nodes_h3qwen": types.SimpleNamespace(
                 MiniMaxH3QwenKeyframeEdit=types.SimpleNamespace(_qwen_edit=qwen)),
@@ -51,7 +57,7 @@ class V2VRoutingTests(unittest.TestCase):
         tree = ast.parse(SOURCE.read_text())
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "MiniMaxH3V2VGenerate")
         namespace = dict(__name__="routing_pkg.nodes_compact", __package__="routing_pkg",
-                         _Pipeline=Pipeline, CATEGORY="test", NONE="(none)",
+                         _Pipeline=Pipeline, CATEGORY="test", NONE="(none)", perf=perf,
                          args=lambda output: output, patch_video_only=wrapper,
                          geometry=types.SimpleNamespace(
                              video_timeline=lambda *a: (22, list(range(22))),
@@ -63,7 +69,7 @@ class V2VRoutingTests(unittest.TestCase):
         with patch.dict(sys.modules, modules):
             result = node.generate(
                 source, target, "fun", "qwen-model", "qwen-clip", "qwen-vae", "custom",
-                h3_sampling_mode=mode, instruction="change clothes", resolution="768p (native)",
+                h3_sampling_mode=mode, reuse_preprocessing=False, instruction="change clothes", resolution="768p (native)",
                 aspect_ratio="same as reference", custom_aspect="16:9", seed=1, steps=2,
                 sampler_name="res_multistep", scheduler="simple")
         self.assertEqual(conditioning.call_args.kwargs["ref_images"], {"ref_image_0": edited})
