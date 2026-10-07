@@ -5,7 +5,7 @@ Integrated R2V and V2V generation nodes with local llama.cpp prompting and nativ
 ## Install
 
 1. Clone `https://github.com/DrakenDrop/ComfyUI-MiniMaxH3-AllInOne.git` into `ComfyUI/custom_nodes/`. Keep only one installation of this node package in `custom_nodes` to avoid duplicate node IDs.
-2. Use a current ComfyUI with `TextEncodeQwenImage21`, `SDPoseKeypointExtractor`, `MiniMaxH3FunControlNetApply`, and `MiniMaxH3AddGuide` (Qwen Image 2.1 support requires 0.37.0 or newer).
+2. Use a current ComfyUI with `TextEncodeQwenImage21`, `MiniMaxH3FunControlNetApply`, and `MiniMaxH3AddGuide` (Qwen Image 2.1 support requires 0.37.0 or newer).
 3. Install requirements using the same Python environment as ComfyUI: `python -m pip install -r requirements.txt`.
 4. Install llama.cpp `llama-server` and set `llama_server_path` in `config.json` (copy `config.example.json`). Put a vision GGUF and its matching mmproj in `ComfyUI/models/LLM/`. Subfolders and split GGUF models are scanned. The model choice `(llama-server yang sudah jalan)` uses an existing server; it does not switch that server's model.
 5. The V2V examples require ComfyUI-VideoHelperSuite for the video loader. Restart ComfyUI and open one of the workflows in `example_workflows/`. Select installed model filenames in the main node; placeholder filenames in the workflows are examples.
@@ -44,12 +44,12 @@ Exactly two media inputs are required:
 
 | Input | Internal use |
 |---|---|
-| `source_video` (IMAGE batch) | Source frames, automatic pose extraction and Fun ControlNet motion guidance |
+| `source_video` (IMAGE batch) | Source frames connected directly to Fun ControlNet control_video |
 | `ref_image` (IMAGE) | Target clothing/person reference supplied as Qwen Image Edit's second image |
 
 The `source_video` socket accepts an **IMAGE batch**, matching native H3's `ref_video` input. Connect the **IMAGE output of VHS Load Video**. Set `force_rate = 24`, `select_every_nth = 1`, and leave the loader's VAE input disconnected. IMAGE batches contain no FPS metadata, so the node interprets the frames at **24 FPS**. A batch loaded at a different FPS would change timing; resample in the video loader first.
 
-Qwen's first image is extracted automatically from source frame 0. Pose extraction, Qwen editing, Fun ControlNet, H3 sampling, and VAE Decode run inside the node. There are no external pose, edit mask, or pre-edited-frame input sockets. The source audio is ignored; the node has no audio input, audio VAE loader, audio decode, or audio output.
+Qwen's first image is extracted automatically from source frame 0. Qwen editing, Fun ControlNet, H3 sampling, and VAE Decode run inside the node. There are no external pose, edit mask, or pre-edited-frame input sockets. The source audio is ignored; the node has no audio input, audio VAE loader, audio decode, or audio output.
 
 After updating, recreate the V2V node or load the updated example. The `source_video` socket now uses IMAGE rather than VIDEO; reconnect the video loader\'s IMAGE output. Both media inputs must be connected. The old `v2v_video_only_input.json` filename is retained for existing download links but now also requires a reference image.
 
@@ -57,14 +57,14 @@ Internally:
 
 1. Read the supplied 24 FPS IMAGE batch and select a segment. Snap DOWN to a valid `17k+5` frame count, capped at 362 frames. The end can be shortened by up to 16 frames (0.67 seconds); no repeated last frames are added. This preserves the sampled source timing instead of stretching it.
 2. Resize/crop the source to the selected canvas. `same as reference` follows the **source video's** aspect ratio in V2V, and the image's aspect ratio in R2V.
-3. Enhance the single user instruction into Qwen and MiniMax prompts, then extract body, hands, face and feet pose automatically from the source video using an automatically detected native SDPose checkpoint. This uses full-frame single-person detection; multi-person videos may need a different workflow.
+3. Enhance the single user instruction into separate internal Qwen and MiniMax prompts.
 4. Using the Qwen prompt prepared by the shared enhancer, Qwen Image 2.1 edits source frame 0 as Image 1 with the connected reference image as Image 2.
 5. Use the MiniMax prompt prepared by the shared enhancer. Anchor the Qwen-edited frame at frame 0.
-6. Load the H3 Fun ControlNet Union patch and apply the pose extracted from the source video as motion control.
+6. Load the H3 Fun ControlNet Union patch and pass the source IMAGE batch directly to its `control_video` input. No pose preprocessor or mask is used.
 7. Apply the **experimental video-only wrapper**: target audio is a zero-length token stream inside the H3 transformer. The sampler carries a zero audio placeholder only for native AV-container compatibility; its noise generator produces randomness only for video. Nothing is decoded or exported as audio.
 8. Sample and VAE-decode the generated frames. Return a single IMAGE batch; no audio is generated, decoded, or returned.
 
-`change clothes` preserves source identity and takes the reference outfit. `change person` takes target identity and preserves source performance. A custom instruction can describe either edit in Indonesian or English. Pose control improves motion adherence; exact pixel-level/person-motion equality is not guaranteed by a generative model. Full-frame edits can alter backgrounds.
+`change clothes` preserves source identity and takes the reference outfit. `change person` takes target identity and preserves source performance. A custom instruction can describe either edit in Indonesian or English. Direct RGB control follows the requested workflow; compatibility and motion adherence depend on the selected ControlNet weights. Exact pixel-level/person-motion equality is not guaranteed by a generative model. Full-frame edits can alter backgrounds.
 
 ### Required model files (examples)
 
@@ -74,7 +74,6 @@ Internally:
 | `text_encoders` | `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors`; V2V also `qwen3vl_8b_int8_convrot.safetensors` |
 | `vae` | `minimax_h3_video_vae_int8_convrot.safetensors`; R2V also `minimax_h3_audio_vae_fp32.safetensors`; V2V also `qwen_image_2.1_vae_bf16.safetensors` |
 | `model_patches` | V2V: H3-compatible Fun ControlNet Union checkpoint, including Kijai's compatible converted weights |
-| `checkpoints` | V2V: `sdpose_wholebody_fp16.safetensors` |
 | `LLM` | Vision GGUF for llama.cpp plus its matching mmproj |
 
 Use the Qwen **2.1** diffusion model, encoder and VAE together. Older Qwen Image/Edit models are different architectures. The H3 text encoder and the prompter GGUF are separate models. This internal H3 loader supports native safetensors; diffusion-model GGUF loaders are not included.
@@ -94,9 +93,9 @@ Qwen editing rules are adapted from the [official edit enhancer system prompt](h
 
 The prompt enhancer requires working vision support and a matching mmproj. Malformed or incomplete responses stop with an error instead of silently using an unrelated prompt.
 
-### Automatic pose checkpoint selection
+### Direct video control
 
-The node internally finds an SDPose whole-body checkpoint under `ComfyUI/models/checkpoints/`, preferring FP16. Install `sdpose_wholebody_fp16.safetensors` there. There is no pose checkpoint dropdown; SAM/SAM3 checkpoints are never selected. If SDPose is missing, the node reports the required file.
+The source frames are passed directly to Fun ControlNet's `control_video` input. No SDPose checkpoint or pose extraction is required. The implementation uses this control input because native Fun ControlNet reads its separate `source_video` input only with a mask. Direct RGB control has not been GPU-validated here; use compatible weights from your working workflow.
 
 ## Resolution and aspect ratio
 
@@ -115,14 +114,14 @@ Also available: 1:1, 4:3, 3:4, 3:2, 2:3, 21:9, same as reference, custom. Set cu
 - `additional_system_prompt` appends user system instructions to the official-format system prompt. Node-level policies still enforce the first-frame option and V2V's audio-free prompt fields.
 - R2V only: `prompt_override` skips the LLM and must contain the six official sections in order. Truncated or incorrectly formatted responses fail visibly rather than being passed silently to H3.
 - The managed llama-server is stopped after prompting by default to release VRAM. An external server is never stopped automatically. Before prompting, GPU-resident ComfyUI models are unloaded so the external LLM can load; ComfyUI reloads models when needed.
-- Node outputs include the written prompt, actual canvas size/frame count, and V2V's edited frame/pose batch for inspection.
+- V2V exposes decoded IMAGE frames only. R2V additionally exposes its prompt, canvas size and frame count.
 - These additions do not replace or change the existing prompter, I2V, V2V or Qwen keyframe nodes.
 
 ## Validation status
 
 API signatures and model filenames were checked against current official ComfyUI and Qwen sources. Workflow graph consistency is checked by `tools/check_workflows.cjs`. Unit tests cover canvas sizing, temporal sampling, first-frame prompt policy, audio-tag rejection and the zero-audio-token wrapper contract: `python -m unittest discover -s tests -v`.
 
-The creation environment has no usable Python/ComfyUI GPU runtime, so Python tests and end-to-end generation have **not** been run. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
+Python syntax checks, all seven unit tests, and the workflow graph checks pass. End-to-end generation has **not** been run because no ComfyUI GPU runtime is available here. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
 
 The example workflows were built using public official templates as integration references. They have not been validated through end-to-end generation.
 

@@ -66,7 +66,7 @@ class _Pipeline:
         import folder_paths
         import nodes
         folders = {"model": "diffusion_models", "clip_h3": "text_encoders", "clip_qwen": "text_encoders",
-                   "vae": "vae", "patch": "model_patches", "pose": "checkpoints"}
+                   "vae": "vae", "patch": "model_patches"}
         path = folder_paths.get_full_path_or_raise(folders[kind], name)
         stamp = (path, os.stat(path).st_mtime_ns, os.stat(path).st_size)
         cached = self._models.get(kind)
@@ -82,7 +82,7 @@ class _Pipeline:
             from comfy_extras.nodes_model_patch import ModelPatchLoader
             obj = ModelPatchLoader().load_model_patch(name)[0]
         else:
-            obj = nodes.CheckpointLoaderSimple().load_checkpoint(name)
+            raise ValueError(f"Unknown model role: {kind}")
         # One cached object per role; replaces changed files instead of accumulating runs.
         self._models[kind] = (stamp, obj)
         return obj
@@ -203,21 +203,8 @@ class MiniMaxH3V2VGenerate(_Pipeline):
     FUNCTION = "generate"
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("images",)
-    DESCRIPTION = "Source IMAGE batch (24 FPS) + reference IMAGE -> Qwen Image 2.1 first-frame edit -> pose/Fun ControlNet -> H3 sampler -> VAE Decode IMAGE frames. No audio generation or debug outputs. Video-only denoising is experimental."
+    DESCRIPTION = "Source IMAGE batch (24 FPS) + reference IMAGE -> Qwen Image 2.1 first-frame edit -> Fun ControlNet -> H3 sampler -> VAE Decode IMAGE frames. No audio generation or debug outputs. Video-only denoising is experimental."
 
-
-    @staticmethod
-    def _pose_checkpoint():
-        """Resolve a whole-body SDPose checkpoint; never select unrelated SAM models."""
-        import folder_paths
-        files = [name for name in folder_paths.get_filename_list("checkpoints")
-                 if "sdpose" in os.path.basename(name).lower()
-                 and "wholebody" in os.path.basename(name).lower()]
-        if not files:
-            raise FileNotFoundError(
-                "Automatic pose extraction requires sdpose_wholebody_fp16.safetensors "
-                "in ComfyUI/models/checkpoints/. SAM/SAM3 models are not compatible.")
-        return sorted(files, key=lambda name: ("fp16" not in name.lower(), name.lower()))[0]
 
     def _enhance_edit(self, source, reference, instruction, frames, **kw):
         """One user instruction -> one vision enhancement response containing both prompts."""
@@ -336,7 +323,7 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         optional.update({
             "start_seconds": ("FLOAT", {"default": 0.0, "min": 0, "max": 3600}),
             "max_seconds": ("FLOAT", {"default": 15.08, "min": 0.21, "max": 15.08}),
-            "pose_strength": ("FLOAT", {"default": 1.0, "min": 0, "max": 3, "step": 0.05}),
+            "control_strength": ("FLOAT", {"default": 1.0, "min": 0, "max": 3, "step": 0.05}),
             "qwen_steps": ("INT", {"default": 25, "min": 1, "max": 100}),
             "qwen_resolution": ("INT", {"default": 1024, "min": 512, "max": 2048, "step": 32}),
         })
@@ -344,11 +331,11 @@ class MiniMaxH3V2VGenerate(_Pipeline):
 
     def generate(self, source_video, ref_image, fun_controlnet, qwen_model,
                  qwen_text_encoder, qwen_vae, edit_mode, start_seconds=0.0, max_seconds=15.08,
-                 pose_strength=1.0, qwen_steps=25, qwen_resolution=1024,
+                 control_strength=1.0, qwen_steps=25, qwen_resolution=1024,
                  **kw):
         import torch
         import nodes
-        from comfy_extras import nodes_minimax_h3 as h3, nodes_sdpose
+        from comfy_extras import nodes_minimax_h3 as h3
         from .nodes_h3qwen import MiniMaxH3QwenKeyframeEdit
 
         if source_video.ndim != 4 or source_video.shape[-1] < 3 or len(source_video) == 0:
@@ -369,17 +356,7 @@ class MiniMaxH3V2VGenerate(_Pipeline):
                            if edit_mode == "change person" else "")
         if not instruction:
             raise ValueError("Write an edit instruction for custom edit mode")
-        pose_checkpoint = self._pose_checkpoint()
         qwen_prompt, prompt = self._enhance_edit(source, ref_image[:1], frames=frames, **{**kw, "instruction": instruction, "edit_mode": edit_mode})
-        pose_model, _, pose_vae = self._load("pose", pose_checkpoint)
-        keypoints = args(nodes_sdpose.SDPoseKeypointExtractor.execute(
-            model=pose_model, vae=pose_vae, image=source, batch_size=4))[0]
-        pose = args(nodes_sdpose.SDPoseDrawKeypoints.execute(
-            keypoints=keypoints, draw_body=True, draw_hands=True, draw_face=True, draw_feet=True,
-            stick_width=4, face_point_size=3, score_threshold=0.3, draw_head=True))[0]
-        if len(pose) != frames:
-            raise ValueError("Pose extraction returned a different number of frames")
-
         # Qwen always edits the source first frame using the connected reference.
         qloader = _Pipeline()
         qm = qloader._load("model", qwen_model)
@@ -401,8 +378,8 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         positive = args(h3.MiniMaxH3AddGuide.execute(positive=positive, latent=latent, frame_idx=0, vae=vae, image=first))[0]
         patch = self._load("patch", fun_controlnet)
         model = args(h3.MiniMaxH3FunControlNetApply.execute(
-            model=model, model_patch=patch, vae=vae, strength=pose_strength,
-            start_percent=0.0, end_percent=1.0, control_video=pose, source_video=source))[0]
+            model=model, model_patch=patch, vae=vae, strength=control_strength,
+            start_percent=0.0, end_percent=1.0, control_video=source))[0]
         model = patch_video_only(model)
         images, _ = self._sample(model, positive, latent, vae, kw["seed"], kw["steps"], kw["sampler_name"], kw["scheduler"], silent=True)
         images = images[:frames]

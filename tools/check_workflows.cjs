@@ -26,6 +26,7 @@ for (const file of fs.readdirSync(path.join(root, 'example_workflows')).filter(f
   assert.equal(pipeline.widgets_values_named.resolution, '480p');
   if (pipeline.type === 'MiniMaxH3V2VGenerate') {
     assert.equal(pipeline.outputs.length, 1);
+    for (const key of ['pose_checkpoint', 'pose_strength', 'qwen_prompt', 'prompt_override']) assert(!(key in pipeline.widgets_values_named));
     const combine = graph.nodes.find(n => n.type === 'VHS_VideoCombine');
     if (combine) {
       assert.equal(combine.widgets_values_named.frame_rate, 24);
@@ -55,7 +56,8 @@ const compact = fs.readFileSync(path.join(root, 'nodes_compact.py'), 'utf8');
 assert(!compact.slice(compact.indexOf('class MiniMaxH3V2VGenerate')).includes('nodes_video'));
 assert(compact.includes('return (images,)'));
 assert(compact.includes('silent=True'));
-assert(compact.includes('image=source'));
+assert(compact.includes('control_video=source'));
+assert(!compact.includes('nodes_sdpose'));
 assert(compact.includes('qwen_images = [source[:1], ref_image[:1]]'));
 assert(!/external_pose|edit_mask|edited_first_frame/.test(compact));
 assert(compact.includes('MiniMaxH3AddGuide.execute('));
