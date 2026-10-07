@@ -81,17 +81,17 @@
       ],
       "outputs": [
         {
+          "name": "images",
+          "type": "IMAGE",
+          "links": null,
+          "slot_index": 0
+        },
+        {
           "name": "video",
           "type": "VIDEO",
           "links": [
             3
           ],
-          "slot_index": 0
-        },
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "links": null,
           "slot_index": 1
         },
         {
@@ -131,7 +131,7 @@
           "slot_index": 7
         }
       ],
-      "title": "V2V: Qwen First Frame + Pose + H3 (Silent)",
+      "title": "V2V: Sample + VAE Decode (IMAGE, Silent)",
       "properties": {
         "Node name for S&R": "MiniMaxH3V2VGenerate"
       },
@@ -265,7 +265,7 @@
     [
       3,
       3,
-      0,
+      1,
       4,
       0,
       "VIDEO"
