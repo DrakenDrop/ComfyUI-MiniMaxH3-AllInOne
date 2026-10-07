@@ -84,9 +84,8 @@ def server_ready(server_url: str) -> bool:
 
 def _start_server(cfg: dict) -> None:
     global _server_process
-    exe = (cfg.get("llama_server_path") or "").strip()
-    if not exe:
-        raise ServerError("autostart is on but 'llama_server_path' is empty in config.json.")
+    from .managed_server import find_llama_server
+    exe = find_llama_server(cfg)
     args = cfg.get("llama_server_args") or []
     if isinstance(args, str):
         args = shlex.split(args, posix=(os.name != "nt"))
@@ -94,8 +93,8 @@ def _start_server(cfg: dict) -> None:
     log("starting llama-server: " + " ".join(cmd))
     kwargs = {}
     if os.name == "nt":
-        # own console window, survives ComfyUI restarts -> model stays in VRAM
-        kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE  # type: ignore[attr-defined]
+        # run in the background without opening a console window
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
     else:
         kwargs["start_new_session"] = True
     _server_process = subprocess.Popen(cmd, **kwargs)

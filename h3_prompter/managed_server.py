@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import subprocess
 import time
 
@@ -26,37 +25,14 @@ DEFAULT_MANAGED_ARGS = ["--jinja", "-ngl", "999", "-np", "1"]
 _help_cache: dict[str, str] = {}
 
 
-def _exe_name() -> str:
-    return "llama-server.exe" if os.name == "nt" else "llama-server"
-
-
 def find_llama_server(cfg: dict) -> str:
-    p = (cfg.get("llama_server_path") or "").strip().strip('"')
-    if p:
-        if os.path.isdir(p):
-            p = os.path.join(p, _exe_name())
-        if os.path.isfile(p):
-            return p
-        raise lc.ServerError(f"llama_server_path di config.json tidak ditemukan: {p}")
-    found = shutil.which("llama-server")
-    if found:
-        return found
-    home = os.path.expanduser("~")
-    guesses = [
-        os.path.join(_PACK_DIR, "llama.cpp"),
-        os.path.join(_PACK_DIR, "llama.cpp", "bin"),
-        r"C:\llama.cpp",
-        os.path.join(home, "llama.cpp"),
-        os.path.join(home, "llama.cpp", "build", "bin"),
-    ]
-    for d in guesses:
-        f = os.path.join(d, _exe_name())
-        if os.path.isfile(f):
-            return f
-    raise lc.ServerError(
-        "llama-server tidak ditemukan. Isi 'llama_server_path' di config.json (mis. C:\\llama.cpp\\llama-server.exe), "
-        "atau taruh folder llama.cpp di C:\\llama.cpp."
-    )
+    from .server_discovery import discover
+    try:
+        exe = discover(cfg, _PACK_DIR)
+    except FileNotFoundError as exc:
+        raise lc.ServerError(str(exc)) from exc
+    lc.log(f"Using llama-server: {exe}")
+    return exe
 
 
 def _help_text(exe: str) -> str:

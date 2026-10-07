@@ -1,5 +1,5 @@
 {
-  "llama_server_path": "C:\\llama.cpp\\llama-server.exe",
+  "llama_server_path": "",
   "managed_port": 8090,
   "context_size": 32768,
   "managed_server_args": [
@@ -31,5 +31,6 @@
     "--alias",
     "qwen3.8-27b"
   ],
-  "startup_wait_seconds": 900
+  "startup_wait_seconds": 900,
+  "llama_server_search_dirs": []
 }

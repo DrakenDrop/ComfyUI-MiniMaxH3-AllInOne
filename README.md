@@ -48,7 +48,7 @@ R2V uses standard media loaders and Save Video. V2V uses VHS Load Video (IMAGE o
 1. Clone `https://github.com/DrakenDrop/ComfyUI-MiniMaxH3-AllInOne.git` into `ComfyUI/custom_nodes/`. Keep only one installation of this node package in `custom_nodes` to avoid duplicate node IDs.
 2. Use a current ComfyUI with `TextEncodeQwenImage21`, `MiniMaxH3FunControlNetApply`, and `MiniMaxH3AddGuide` (Qwen Image 2.1 support requires 0.37.0 or newer).
 3. Install requirements using the same Python environment as ComfyUI: `python -m pip install -r requirements.txt`.
-4. Install llama.cpp `llama-server` and set `llama_server_path` in `config.json` (copy `config.example.json`). Put a vision GGUF and its matching mmproj in `ComfyUI/models/LLM/`. Subfolders and split GGUF models are scanned. The model choice `(llama-server yang sudah jalan)` uses an existing server; it does not switch that server's model.
+4. Install/extract llama.cpp `llama-server`. The node detects its executable automatically; `llama_server_path` can stay empty. Put a vision GGUF and its matching mmproj in `ComfyUI/models/LLM/`. Subfolders and split GGUF models are scanned. The model choice `(llama-server yang sudah jalan)` uses an existing server; it does not switch that server's model.
 5. The V2V examples require ComfyUI-VideoHelperSuite for the video loader. Restart ComfyUI and open one of the workflows in `example_workflows/`. Select installed model filenames in the main node; placeholder filenames in the workflows are examples.
 
 ## Decoded IMAGE output
@@ -80,7 +80,7 @@ Try [V2V decoded IMAGE frames](example_workflows/v2v_decoded_images.json): sourc
 
 Required reference assets: one image and one audio clip. No reference-video socket.
 
-The node loads H3 ref2va, the H3 text encoder, video VAE and audio VAE. It writes the official six-section prompt through llama.cpp, encodes references, samples with BasicGuider (guidance 1), decodes, and returns a VIDEO object with audio.
+The node loads H3 ref2va, the H3 text encoder, video VAE and audio VAE. It writes a simple or official six-section prompt through llama.cpp, encodes references, samples with BasicGuider (guidance 1), decodes, and returns a VIDEO object with audio.
 
 - `ref_image_1_as_first_frame`: Yes declares `<Picture 1>` as the first frame in the prompt and adds a native H3 guide at frame 0. No uses the image as an appearance reference. The image is resized/cropped to the selected canvas, so a changed aspect ratio cannot preserve its original pixels exactly.
 - `audio_mode`: generate from reference lets H3 use the audio as conditioning; reuse reference exactly copies the original waveform into the output, trimmed to the generated duration. A shorter reference ends before the video. H3's joint sampling still runs in both R2V audio modes.
@@ -185,10 +185,37 @@ Presets: 360p, 480p, native 768p. All canvases use multiples of 32. `360p` means
 
 Also available: 1:1, 4:3, 3:4, 3:2, 2:3, 21:9, same as reference, custom. Set custom as `width:height`, e.g. `5:4`. Changing aspect ratio crops the source/reference and affects framing.
 
+### MiniMax enhancement style
+
+Both all-in-one nodes provide `minimax_prompt_style`:
+
+- `simple`: concise free-form MiniMax instructions without the six section headings.
+- `official` (default): the six official H3 sections in canonical order.
+
+V2V still enhances one user instruction into a Qwen edit prompt and a MiniMax prompt. The style selector affects only MiniMax; both modes retain source/reference labels and the silent-video policy.
+
+In official V2V mode, the enhancer is asked for a structured object with six fields; the node formats it into the H3 text prompt. Complete text responses, Markdown headings, JSON section objects, and reordered sections are normalized. Missing, duplicate or empty sections produce an explicit error. Simple mode does not run the six-section validator.
+
+`max_tokens` is an output budget shared by both prompts, not a guarantee of correct formatting. An 8192-token budget can still produce invalid headings; increase it only when the response is actually truncated. Errors now identify missing sections instead of assuming a token shortage.
+
+### Automatic llama-server discovery
+
+For a locally selected GGUF, the node finds and starts an installed `llama-server` automatically. It checks:
+
+1. An explicit `llama_server_path` override, if provided.
+2. `LLAMA_SERVER_PATH` / `LLAMA_CPP_DIR` environment variables and PATH.
+3. The custom-node package, ComfyUI and its portable parent, registered LLM folders, the Python executable folder, home/Downloads, and common Windows/Linux locations such as `C:/llama.cpp` and `/workspace/llama.cpp`.
+
+Known layouts include the folder itself, `bin`, `build/bin`, and `build/bin/Release`, including extracted `llama-*` release folders. The scan is bounded; it does not search every disk recursively. Keep the executable beside its required libraries. Discovery does not download llama.cpp.
+
+If an old config contains a stale example path, set `llama_server_path` to an empty string or `auto`. A valid manual override retains priority; an invalid explicit override reports an error. Unusual locations can be listed in `llama_server_search_dirs` in config.json. The chosen executable is logged in the ComfyUI console.
+
+Discovery also applies when configured external-server `autostart` is enabled. Selecting `(llama-server yang sudah jalan)` still uses the configured server URL; the node does not scan network ports or change that server's model.
+
 ## Prompt controls and memory
 
 - `additional_system_prompt` appends user system instructions to the official-format system prompt. Node-level policies still enforce the first-frame option and V2V's audio-free prompt fields.
-- R2V only: `prompt_override` skips the LLM and must contain the six official sections in order. Truncated or incorrectly formatted responses fail visibly rather than being passed silently to H3.
+- R2V only: `prompt_override` skips the LLM. Its format must match `minimax_prompt_style`: free-form text for simple, six sections for official.
 - The managed llama-server is stopped after prompting by default to release VRAM. An external server is never stopped automatically. Before prompting, GPU-resident ComfyUI models are unloaded so the external LLM can load; ComfyUI reloads models when needed.
 - V2V exposes decoded video frames, the Qwen edit, and both enhanced prompts. R2V additionally exposes its prompt, canvas size and frame count.
 - These additions do not replace or change the existing prompter, I2V, V2V or Qwen keyframe nodes.
@@ -197,7 +224,7 @@ Also available: 1:1, 4:3, 3:4, 3:2, 2:3, 21:9, same as reference, custom. Set cu
 
 API signatures and model filenames were checked against current official ComfyUI and Qwen sources. Workflow graph consistency is checked by `tools/check_workflows.cjs`. Unit tests cover canvas sizing, temporal sampling, first-frame prompt policy, audio-tag rejection and the zero-audio-token wrapper contract: `python -m unittest discover -s tests -v`.
 
-Python syntax checks, all seven unit tests, and the workflow graph checks pass. End-to-end generation has **not** been run because no ComfyUI GPU runtime is available here. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
+Python syntax checks, all 16 unit tests (including discovery and prompt-format regressions), and the workflow graph checks pass. End-to-end generation has **not** been run because no ComfyUI GPU runtime is available here. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
 
 The example workflows were built using public official templates as integration references. They have not been validated through end-to-end generation.
 

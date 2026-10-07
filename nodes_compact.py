@@ -5,7 +5,7 @@ import os
 from . import nodes as prompter
 from .h3_prompter import canvas as geometry, local_models, managed_server, v2v
 from .h3_prompter.video_only import patch_video_only, VideoOnlyNoise
-from .h3_prompter.prompt_format import apply_policy
+from .h3_prompter.prompt_format import apply_policy, parse_edit_response
 
 CFG = prompter._CFG
 CATEGORY = "MiniMax H3/All in One"
@@ -55,6 +55,7 @@ def extra_inputs():
         "context_size": ("INT", {"default": 32768, "min": 4096, "max": 262144, "step": 1024}),
         "server_url": ("STRING", {"default": CFG.get("server_url", "http://127.0.0.1:8080")}),
         "unload_llm_after_prompt": ("BOOLEAN", {"default": True}),
+        "minimax_prompt_style": (["official", "simple"], {"default": "official", "tooltip": "official: six H3 sections; simple: concise free-form prompt. Qwen keeps its edit prompt."}),
     }
 
 
@@ -90,7 +91,7 @@ class _Pipeline:
     def _prompt(self, *, ref_image, frames, instruction, llm_model, mmproj, seed,
                 video=None, first_frame=None, audio=None, additional_system_prompt="",
                 prompt_override="", max_tokens=3072, context_size=32768,
-                server_url="http://127.0.0.1:8080", unload_llm_after_prompt=True, **unused):
+                server_url="http://127.0.0.1:8080", unload_llm_after_prompt=True, minimax_prompt_style="official", **unused):
         if prompt_override.strip():
             prompt = prompt_override.strip()
         else:
@@ -120,12 +121,12 @@ class _Pipeline:
                     model=llm_model, mmproj=mmproj, frame_count=frames,
                     additional_system_prompt=additional_system_prompt, extra_rules=rules,
                     context_size=context_size, server_url=server_url, describe_refs=True,
-                    prompt_style="full (official H3)", **assets)[0]
+                    prompt_style="simple" if minimax_prompt_style == "simple" else "full (official H3)", **assets)[0]
             finally:
                 if unload_llm_after_prompt and llm_model != local_models.SERVER_DEFAULT:
                     managed_server.stop(CFG)
         return apply_policy(prompt, first_frame=bool(unused.get("ref_image_1_as_first_frame", False)),
-                            silent=video is not None)
+                            silent=video is not None, style=minimax_prompt_style)
 
     def _sample(self, model, positive, latent, video_vae, seed, steps, sampler_name, scheduler, silent=False):
         import comfy.samplers
@@ -208,8 +209,6 @@ class MiniMaxH3V2VGenerate(_Pipeline):
 
     def _enhance_edit(self, source, reference, instruction, frames, **kw):
         """One user instruction -> one vision enhancement response containing both prompts."""
-        import json
-        import re
         import comfy.model_management
         from .h3_prompter import media, llama_client as lc, prompts
 
@@ -225,10 +224,13 @@ class MiniMaxH3V2VGenerate(_Pipeline):
             lc.ensure_server(server_url, CFG)
             alias = CFG.get("model_alias", "qwen3.8-27b")
 
+        style = kw.get("minimax_prompt_style", "official")
+        if style not in ("official", "simple"):
+            raise ValueError(f"Unknown MiniMax prompt style: {style}")
         # Editing rules adapted from Qwen's official system_prompt_edit.txt.
         system = (
             "Prepare coordinated prompts for a silent video edit from ONE user instruction. "
-            "Return a JSON object with exactly two string fields: qwen_prompt and minimax_prompt. "
+            "Return a JSON object with exactly two fields: qwen_prompt and minimax_prompt. "
             "For qwen_prompt use <image1> for the source first frame (the canvas), and <image2> "
             "for the supplied appearance reference. State the requested operation clearly, "
             "identify each image's role, and preserve attributes the user did not request to edit. "
@@ -244,20 +246,29 @@ class MiniMaxH3V2VGenerate(_Pipeline):
             "Picture 2 has not been generated yet: describe its intended role, not invented observations. "
             "The target appearance must exist from frame 0 throughout the clip, not transform gradually. "
             "Preserve source timing, actions, camera and shots. Do not invent motion or sound. "
-            "Use [video editing]; set overall_soundscape and non_diegetic_music to N/A. "
+            "Use [video editing] and describe silent video only. "
             "Do not use <Audio N> or Qwen <imageN> labels in minimax_prompt.\n\n"
-            "H3 formatting rules (apply ONLY inside the minimax_prompt string):\n"
-            + prompts.SYSTEM_PROMPT_R2V
+            + ("H3 formatting rules (apply ONLY to minimax_prompt):\n" + prompts.SYSTEM_PROMPT_R2V
+               if style == "official" else
+               "For minimax_prompt write 2-4 concise English sentences describing the requested edit, "
+               "the roles of <Video 1>, <Picture 1>, and <Picture 2>, preserved motion/camera/timing, "
+               "and the first-frame anchor. No section headings, retention analysis or shot list.")
         )
         extra = str(kw.get("additional_system_prompt", "")).strip()
         if extra:
             system += "\n\nAdditional user preferences:\n" + extra
-        system += (
-            "\n\nResponse envelope: output only JSON {"
-            "\"qwen_prompt\":\"...\",\"minimax_prompt\":\"...\"}. "
-            "The minimax_prompt string contains all six H3 sections in order. "
-            "The qwen_prompt string uses both <image1> and <image2>. No Markdown fences."
-        )
+        if style == "official":
+            system += (
+                "\n\nResponse envelope: output only JSON with qwen_prompt (a string) and "
+                "minimax_prompt (an object with six non-empty string fields: "
+                + ", ".join(prompts.R2V_FIELDS) + "). "
+                "Set overall_soundscape and non_diegetic_music to N/A. "
+                "qwen_prompt uses both <image1> and <image2>. No Markdown fences.")
+        else:
+            system += (
+                "\n\nResponse envelope: output only JSON with two strings: qwen_prompt and minimax_prompt. "
+                "minimax_prompt is concise prose, without the six official section headings. "
+                "qwen_prompt uses both <image1> and <image2>. No Markdown fences.")
         parts = [{"type": "text", "text": (
             f"User instruction: {instruction}\nEdit mode: {kw['edit_mode']}\n"
             f"Video: {frames} frames at 24 FPS ({frames / 24:.3f} seconds). "
@@ -289,22 +300,7 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         finally:
             if kw.get("unload_llm_after_prompt", True) and model_path:
                 managed_server.stop(CFG)
-        try:
-            result = json.loads(content)
-        except (TypeError, json.JSONDecodeError) as exc:
-            raise ValueError("Prompt enhancement did not return complete JSON; check max_tokens and the vision model.") from exc
-        if not isinstance(result, dict) or set(result) != {"qwen_prompt", "minimax_prompt"}:
-            raise ValueError("Enhancer must return qwen_prompt and minimax_prompt.")
-        qwen, minimax = result["qwen_prompt"], result["minimax_prompt"]
-        if not isinstance(qwen, str) or not qwen.strip() or not isinstance(minimax, str) or not minimax.strip():
-            raise ValueError("Both enhanced prompts must be non-empty strings.")
-        if "<image1>" not in qwen or "<image2>" not in qwen:
-            raise ValueError("Qwen prompt must reference <image1> (source) and <image2> (target).")
-        if re.search(r"<image\s*\d+>", minimax, re.I):
-            raise ValueError("MiniMax prompt contains Qwen image labels.")
-        minimax = apply_policy(minimax, silent=True)
-        if not all(tag in minimax for tag in ("<Video 1>", "<Picture 1>", "<Picture 2>")):
-            raise ValueError("MiniMax prompt must reference source video, appearance reference, and edited first frame.")
+        qwen, minimax = parse_edit_response(content, style=style)
         lc.log("One instruction enhanced into Qwen and MiniMax prompts.")
         return qwen.strip(), minimax
 

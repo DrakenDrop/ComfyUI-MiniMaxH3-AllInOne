@@ -182,7 +182,8 @@
         3072,
         32768,
         "http://127.0.0.1:8080",
-        true
+        true,
+        "official"
       ],
       "widgets_values_named": {
         "h3_model": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
@@ -210,7 +211,8 @@
         "max_tokens": 3072,
         "context_size": 32768,
         "server_url": "http://127.0.0.1:8080",
-        "unload_llm_after_prompt": true
+        "unload_llm_after_prompt": true,
+        "minimax_prompt_style": "official"
       }
     },
     {
