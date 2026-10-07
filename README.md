@@ -1,325 +1,141 @@
 # ComfyUI-MiniMaxH3-AllInOne
 
-Node terpadu MiniMax H3 untuk **R2V image + audio** dan **V2V tanpa audio (eksperimental)**, termasuk prompter llama.cpp, sampler, Qwen Image 2.1 untuk first frame, dan pose control.
+All-in-one ComfyUI nodes for **MiniMax H3 reference-to-video (R2V)** and **experimental silent video-to-video editing (V2V)**. Model loading, local prompt generation, sampling, and video decoding are combined into a single generation node.
 
-**Mulai di [panduan All in One](COMPACT_README.md)** dan contoh di [`example_workflows/`](example_workflows/). Mode V2V tanpa audio belum diuji dengan GPU; kesamaan gerakan persis tidak dijamin.
+## Features
 
-Instal dari folder `ComfyUI/custom_nodes`:
+- R2V with one reference image and one reference audio clip.
+- V2V with a source video and one optional appearance reference image.
+- Qwen Image 2.1 editing of the source video's first frame.
+- Pose guidance with H3-compatible Fun ControlNet Union weights.
+- Local llama.cpp prompting with automatic GGUF discovery in `ComfyUI/models/LLM/`.
+- Official H3 prompt structure with optional additional system instructions.
+- 360p, 480p, and native 768p resolution presets.
+- Reference-based, standard, and custom aspect ratios.
+- An R2V option to use reference image 1 as the first frame.
+- VIDEO output that connects directly to Save Video.
+
+**Status:** End-to-end GPU validation is pending. Silent V2V denoising is experimental, and exact motion reproduction is not guaranteed.
+
+## Quick start
+
+Run these commands from your ComfyUI installation:
 
 ```sh
+cd custom_nodes
 git clone https://github.com/DrakenDrop/ComfyUI-MiniMaxH3-AllInOne.git
+cd ComfyUI-MiniMaxH3-AllInOne
+python -m pip install -r requirements.txt
 ```
 
-Repo ini mencakup node dari [ComfyUI-MiniMaxH3-Prompter](https://github.com/DrakenDrop/ComfyUI-MiniMaxH3-Prompter). Hapus atau pindahkan instalasi lama dari `custom_nodes` sebelum menggunakan repo ini agar ID node tidak duplikat.
+Use the Python environment that runs ComfyUI. For a portable installation, use its bundled Python executable.
 
----
+Configure llama.cpp and install the required models as described below, restart ComfyUI, then open an example workflow. Replace placeholder model filenames with the models installed on your machine.
 
-## Dokumentasi prompter bawaan
+## Example workflows
 
-Node ComfyUI untuk menulis prompt **MiniMax H3 Full-Reference (R2V)** secara cepat, memakai **Qwen3.8-27B GGUF dari Unsloth** lewat **llama.cpp (`llama-server`)**. Model tetap tinggal di VRAM, jadi setiap run langsung jalan tanpa loading ulang.
-
-Format output mengikuti [official Full-Reference prompt guide MiniMax H3](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_ref_en.md):
-`subject_definitions` → `summary` → `retention_analysis` → `detailed_description` → `overall_soundscape` → `non_diegetic_music`.
-
-## Fitur
-
-- **Deteksi model otomatis**: dropdown berisi semua GGUF di `ComfyUI/models/LLM`, lengkap dengan mmproj yang cocok. llama-server dijalankan otomatis, dan model tetap di VRAM sampai kamu memilih model lain.
-- **Thinking benar-benar OFF** (default). Tiga lapis pengaman:
-  1. `chat_template_kwargs: {"enable_thinking": false}` di setiap request;
-  2. *prefill*: jawaban model langsung dimulai dari `subject_definitions:`, jadi model tidak sempat mulai berpikir;
-  3. penjaga: kalau token reasoning tetap muncul, stream langsung diputus dan diulang dengan blok `<think></think>` kosong. Output `reasoning` selalu kosong kalau thinking = off.
-- **Multi input image**: `image_1` … `image_9` terpisah (tanpa batch), sama seperti `ref_image_1..9` di node H3.
-- **Set reference 1 as first frame**: `frame_anchor = reference 1 = first frame` (juga ada opsi last frame, atau first + last).
-- **Edit video**: `task = video editing` + `video_1` (+ `video_1_audio` kalau suara asli mau dipakai lagi).
-- **Edit image**: `task = image edit`. image_1 diubah sesuai instruksi lalu dianimasikan.
-- Video continuation, reference generation, audio sebagai timbre suara atau dipakai ulang persis (lip-sync).
-- Durasi otomatis dibulatkan ke grid H3 **17k+5 frame @24fps**; output `length` bisa langsung disambung ke node H3.
-- Streaming: tombol **Cancel** di ComfyUI langsung menghentikan generasi; progress bar dan kecepatan (tok/s) tampil di console.
-- System prompt statis → llama-server meng-cache prefix-nya, jadi run kedua dan seterusnya lebih cepat.
-- Tanpa dependency pip tambahan (hanya `numpy` + `Pillow`, yang sudah ada di ComfyUI).
-
-## 1. Instal llama.cpp (llama-server)
-
-**Windows:** download build **CUDA untuk Windows** terbaru dari <https://github.com/ggml-org/llama.cpp/releases>. Cari file yang namanya mengandung `win` dan `cuda`; kalau ada zip `cudart` yang cocok, download juga. Untuk GPU Blackwell (RTX 50xx / RTX PRO 6000), pilih versi CUDA paling baru. Extract semuanya ke satu folder, misalnya `C:\llama.cpp`.
-
-**Linux:** pakai build release, atau compile dengan `-DGGML_CUDA=ON`.
-
-## 2. Pilih model (otomatis dari `ComfyUI/models/LLM`)
-
-Node memindai **`ComfyUI/models/LLM`** (termasuk subfolder, misalnya `LLM/GGUF/...` dari ThinkingLLM) dan menampilkan semua file `.gguf` di dropdown **model**. Tidak perlu download ulang.
-
-- **model**: pilih GGUF-nya. Node menjalankan `llama-server` sendiri di port 8090 (`-ngl 999`, semua layer di GPU), dan model **tetap di VRAM** antar-run maupun saat ComfyUI di-restart. Server baru di-restart kalau kamu memilih model, mmproj, atau `context_size` yang lain.
-- **mmproj** (vision): `auto` memilih mmproj di folder yang sama. Yang diutamakan adalah nama yang cocok dengan model (mis. `mmproj-Qwen3.8-27B-ABLITERATED-F16`), atau nama generik seperti `mmproj-F16.gguf` kalau foldernya hanya berisi satu model. Kalau ada keraguan, node memakai mode text-only dan menulis peringatan di console. Pilih mmproj secara manual dari dropdown dalam kasus itu. mmproj yang salah pasangan membuat llama-server crash.
-- Syarat satu-satunya: node harus tahu lokasi `llama-server.exe`. Taruh llama.cpp di `C:\llama.cpp`, atau salin `config.example.json` menjadi `config.json` lalu isi `llama_server_path`. Model tambahan di luar `models/LLM` bisa ditambahkan lewat `extra_model_dirs`.
-- File model yang baru ditambahkan akan muncul setelah browser di-refresh.
-- Node **MiniMax H3 Unload LLM** mematikan server itu untuk membebaskan VRAM. Sambungkan `trigger` ke output prompter kalau kamu mau VRAM langsung dilepas setelah prompt jadi.
-
-### Alternatif: jalankan server sendiri
-
-Pilih model `(llama-server yang sudah jalan)` dan jalankan `start_llama_server.bat`. Edit `LLAMA_DIR`, lalu double-click. Model default di-download otomatis dari Hugging Face (`unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL` + mmproj). Bisa juga diganti ke file lokal dengan `-m ... --mmproj ...`. Server ini memakai port 8080 dan `server_url`.
-
-> VRAM 96 GB: Q4_K_XL + KV cache butuh sekitar 20 GB, jadi masih banyak sisa untuk H3. Untuk kualitas lebih tinggi, pakai `UD-Q6_K_XL` (25 GB) atau `Q8_0` (29 GB). Jangan menjalankan dua server sekaligus (bat + dropdown), karena modelnya akan terpakai dua kali di VRAM.
-
-## 3. Instal node
-
-Salin folder `ComfyUI-MiniMaxH3-Prompter` ke `ComfyUI/custom_nodes/`, lalu restart ComfyUI. Atau:
-
-```bash
-cd ComfyUI/custom_nodes
-git clone https://github.com/DrakenDrop/ComfyUI-MiniMaxH3-Prompter.git
-pip install -r ComfyUI-MiniMaxH3-Prompter/requirements.txt
-```
-
-Dependency-nya hanya `numpy`, `Pillow` dan `psutil`, yang semuanya sudah terpasang bersama ComfyUI. llama-server tidak diinstal lewat pip (lihat langkah 1).
-Node ada di **MiniMax H3/Prompt → MiniMax H3 R2V Prompter (llama.cpp)**.
-
-## 4. Menyambung ke node H3 (penting: urutannya harus sama)
-
-Penomoran label sama persis dengan node core **MiniMax H3 Reference to Video**:
-
-| Prompter | Node H3 Reference to Video | Label di prompt |
+| Workflow | Inputs | Output |
 |---|---|---|
-| `image_1`, `image_2`, … (yang tersambung saja, berurutan) | `ref_image_1`, `ref_image_2`, … | `<Picture 1>`, `<Picture 2>`, … |
-| `video_N` (frame IMAGE @24fps) | `ref_video_N` | `<Video N>` |
-| `video_N_audio` | `ref_video_audio_N` | `<Audio j>`, dinomori **sebelum** audio mandiri |
-| `audio_N` | `ref_audio_N` | `<Audio j>` berikutnya |
+| [R2V image and audio](example_workflows/r2v_image_audio.json) | Reference image and audio | Video with audio |
+| [V2V with appearance reference](example_workflows/v2v_qwen_pose_silent.json) | Source video and reference image | Silent edited video |
+| [V2V with text instructions](example_workflows/v2v_video_only_input.json) | Source video | Silent edited video |
 
-Output node:
+Each workflow uses standard media loaders, one generation node, and Save Video. Model and sampler settings are configured inside the generation node.
 
-- `prompt` → `prompt` di H3 Reference to Video
-- `length` → `length` di H3 Reference to Video (dan Empty Latent kalau dipakai)
-- `first_frame` → untuk **frame_anchor first frame**: sambungkan ke **Add Guide for MiniMax H3** dengan `frame_idx = 0` (positive + latent dari node H3). Gambar yang sama tetap juga disambung ke `ref_image_1`.
-  Untuk *last frame*, sambungkan gambar terakhir ke Add Guide kedua dengan `frame_idx = -1`.
-- `reasoning` → teks reasoning (hanya terisi kalau thinking ≠ off)
+## Requirements and configuration
 
-Pakai node **Preview Any** untuk melihat prompt yang dihasilkan.
+1. Clone `https://github.com/DrakenDrop/ComfyUI-MiniMaxH3-AllInOne.git` into `ComfyUI/custom_nodes/`. Keep only one installation of this node package in `custom_nodes` to avoid duplicate node IDs.
+2. Use a current ComfyUI with `TextEncodeQwenImage21`, `SDPoseKeypointExtractor`, `MiniMaxH3FunControlNetApply`, and `MiniMaxH3AddGuide` (Qwen Image 2.1 support requires 0.37.0 or newer).
+3. Install requirements using the same Python environment as ComfyUI: `python -m pip install -r requirements.txt`.
+4. Install llama.cpp `llama-server` and set `llama_server_path` in `config.json` (copy `config.example.json`). Put a vision GGUF and its matching mmproj in `ComfyUI/models/LLM/`. Subfolders and split GGUF models are scanned. The model choice `(llama-server yang sudah jalan)` uses an existing server; it does not switch that server's model.
+5. Restart ComfyUI and open one of the workflows in `example_workflows/`. Select installed model filenames in the main node; placeholder filenames in the workflows are examples.
 
-## MiniMax H3 V2V Edit + LLM (satu node untuk edit video)
+## R2V Generate
 
-Node **MiniMax H3 V2V Edit + LLM (Fun ControlNet)** menggabungkan V2V Edit ([Minimax-H3-V2V](https://github.com/DrakenDrop/Minimax-H3-V2V)) dengan prompter ini, jadi prompt-nya ditulis oleh LLM lokal yang melihat frame videonya sendiri.
+`Load Image + Load Audio -> MiniMax H3 R2V Generate -> Save Video`
 
-**Preset `edit_mode`** (masing-masing punya aturan prompt dan kekuatan pose/depth/edge sendiri):
+Required reference assets: one image and one audio clip. No reference-video socket.
 
-| preset | untuk | pose / depth / edge (release) |
+The node loads H3 ref2va, the H3 text encoder, video VAE and audio VAE. It writes the official six-section prompt through llama.cpp, encodes references, samples with BasicGuider (guidance 1), decodes, and returns a VIDEO object with audio.
+
+- `ref_image_1_as_first_frame`: Yes declares `<Picture 1>` as the first frame in the prompt and adds a native H3 guide at frame 0. No uses the image as an appearance reference. The image is resized/cropped to the selected canvas, so a changed aspect ratio cannot preserve its original pixels exactly.
+- `audio_mode`: generate from reference lets H3 use the audio as conditioning; reuse reference exactly copies the original waveform into the output, trimmed to the generated duration. A shorter reference ends before the video. H3's joint sampling still runs in both R2V audio modes.
+- The sampler, scheduler, steps and optional LoRA are widgets in the node. Choosing a turbo LoRA does not change steps automatically; choose the appropriate step count yourself.
+
+## V2V Edit
+
+`Load Image + Load Video -> MiniMax H3 V2V Edit -> Save Video`
+
+Required reference asset: source VIDEO. One optional target image can guide appearance; without it, write the desired outfit/person in `instruction`. Qwen's primary image always comes from source frame 0. The source audio is ignored. There is no audio input, audio VAE loader, audio decode or audio output.
+
+Internally:
+
+1. Select a segment and resample to 24 FPS. Snap DOWN to a valid `17k+5` frame count, capped at 362 frames. The end can be shortened by up to 16 frames (0.67 seconds); no repeated last frames are added. This preserves the sampled source timing instead of stretching it.
+2. Resize/crop the source to the selected canvas. `same as reference` follows the **source video's** aspect ratio in V2V, and the image's aspect ratio in R2V.
+3. Extract body, hands, face and feet pose using the selected native SDPose checkpoint. This automatic route uses full-frame single-person detection. For multiple people or higher precision, provide `external_pose` prepared from the same source. Its length must equal the original source frame count at its original FPS, or the already conformed H3 frame count.
+4. Qwen Image 2.1 edits source frame 0, optionally with one target image as its second reference input. Supplying `edited_first_frame` skips Qwen sampling.
+5. llama.cpp writes an H3 `[video editing]` prompt, using source motion/camera and target appearance. The edited frame is anchored at frame 0.
+6. Load the H3 Fun ControlNet Union patch and apply pose control, optionally with an edit mask and source video for inpainting.
+7. Apply the **experimental video-only wrapper**: target audio is a zero-length token stream inside the H3 transformer. The sampler carries a zero audio placeholder only for native AV-container compatibility; its noise generator produces randomness only for video. Nothing is decoded or exported as audio.
+8. Sample and decode video, then return a VIDEO object with `audio=None`. With `edit_mask`, composite source pixels outside the mask back into the output.
+
+`change clothes` preserves source identity and takes the reference outfit. `change person` takes target identity and preserves source performance. A custom instruction can describe either edit in Indonesian or English. Pose control improves motion adherence; exact pixel-level/person-motion equality is not guaranteed by a generative model. Full-frame edits can alter backgrounds; use a tracked mask for stronger preservation.
+
+### Required model files (examples)
+
+| Folder under `ComfyUI/models` | Models |
+|---|---|
+| `diffusion_models` | `minimax_h3_ref2va_pruned_int8_convrot.safetensors`; V2V also `qwen_image_2.1_int8_convrot.safetensors` |
+| `text_encoders` | `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors`; V2V also `qwen3vl_8b_int8_convrot.safetensors` |
+| `vae` | `minimax_h3_video_vae_int8_convrot.safetensors`; R2V also `minimax_h3_audio_vae_fp32.safetensors`; V2V also `qwen_image_2.1_vae_bf16.safetensors` |
+| `model_patches` | V2V: H3-compatible Fun ControlNet Union checkpoint, including Kijai's compatible converted weights |
+| `checkpoints` | V2V: `sdpose_wholebody_fp16.safetensors` |
+| `LLM` | Vision GGUF for llama.cpp plus its matching mmproj |
+
+Use the Qwen **2.1** diffusion model, encoder and VAE together. Older Qwen Image/Edit models are different architectures. The H3 text encoder and the prompter GGUF are separate models. This internal H3 loader supports native safetensors; diffusion-model GGUF loaders are not included.
+
+## Resolution and aspect ratio
+
+Presets: 360p, 480p, native 768p. All canvases use multiples of 32. `360p` means a 352px short edge. Native 768p follows core H3's `768*1344` area cap; ultrawide presets can have a shorter edge.
+
+| Preset | 16:9 | 9:16 |
 |---|---|---|
-| `video_edit` (default) | prompt sama persis dengan prompter biasa (`task = video editing`), tanpa aturan preset tambahan | 0.90 / 0.30 / 0 (0.50) |
-| `change_outfit` | ganti baju (outfit swap) | 0.85 / 0.30 / 0 (0.40) |
-| `replace_person` | ganti orang | 1.00 / 0 / 0 (0.40) |
-| `add_object` | tambah objek | 0.80 / 0.20 / 0 (0.30) |
-| `add_subject` | tambah orang/hewan/karakter | 0.80 / 0 / 0 (0.30) |
-| `remove_object` | hapus objek (baru) | 0.80 / 0.20 / 0 (0.30) |
-| `change_background` | ganti latar (baru) | 0.95 / 0 / 0 (0.30) |
-| `restyle` | ubah gaya visual | 0.60 / 0.50 / 0.30 (0.70) |
-| `custom` | edit apa saja lewat instruction | 0.90 / 0.30 / 0 (0.50) |
+| 360p | 640 × 352 | 352 × 640 |
+| 480p | 864 × 480 | 480 × 864 |
+| 768p native | 1344 × 768 | 768 × 1344 |
 
-- **instruction** boleh kosong kalau ada gambar referensi. Tiap preset punya instruksi default, misalnya "put the outfit from the reference on the person".
-- Frame yang dilihat LLM sama persis dengan yang dipakai H3 (sudah 24 fps, dipotong, dan di-resize di dalam node), jadi timestamp prompt selalu cocok.
-- Prompt di-cache: kalau hanya `motion_lock`, strength, atau setting sampler yang diubah, LLM tidak dijalankan ulang.
-- `prompt_override` diisi → LLM dilewati.
-- `unload_llm_after_prompt` → llama-server dimatikan setelah prompt jadi, supaya VRAM-nya bebas untuk sampling.
-- Resolusi: aspect ratio mengikuti video sumber (sisi pendek 768, maks 768×1344, kelipatan 32).
-- Preset `remove_object` dan `change_background` masih baru: kekuatan ControlNet-nya belum teruji, jadi atur `motion_lock` / strength manual kalau hasilnya kurang pas.
+Also available: 1:1, 4:3, 3:4, 3:2, 2:3, 21:9, same as reference, custom. Set custom as `width:height`, e.g. `5:4`. Changing aspect ratio crops the source/reference and affects framing.
 
-### Audio
+## Prompt controls and memory
 
-Node V2V tidak mengurus audio. Sambungkan audio dari Load Video (atau `audio` dari Conform Video kalau memakai `start_seconds`) langsung ke Create/Combine Video. Prompt otomatis dibuat hemat di bagian suara (soundscape satu kalimat, musik N/A, tanpa dialog baru).
+- `additional_system_prompt` appends user system instructions to the official-format system prompt. Node-level policies still enforce the first-frame option and V2V's audio-free prompt fields.
+- `prompt_override` skips the LLM and must contain the six official sections in order. Truncated or incorrectly formatted responses fail visibly rather than being passed silently to H3.
+- The managed llama-server is stopped after prompting by default to release VRAM. An external server is never stopped automatically. Before prompting, GPU-resident ComfyUI models are unloaded so the external LLM can load; ComfyUI reloads models when needed.
+- Node outputs include the written prompt, actual canvas size/frame count, and V2V's edited frame/pose batch for inspection.
+- These additions do not replace or change the existing prompter, I2V, V2V or Qwen keyframe nodes.
 
-### Edit sejak frame pertama
+## Validation status
 
-LLM wajib menulis elemen baru sebagai sesuatu yang sudah ada sejak frame 0 ("wears ... throughout the whole video"), tanpa kata "now wears / replaced / instead of" dan tanpa menyebut elemen lama. Kata-kata itu bisa dibaca H3 sebagai adegan pergantian, sehingga elemen baru baru muncul di tengah video.
+API signatures and model filenames were checked against current official ComfyUI and Qwen sources. Workflow graph consistency is checked by `tools/check_workflows.cjs`. Unit tests cover canvas sizing, temporal sampling, first-frame prompt policy, audio-tag rejection and the zero-audio-token wrapper contract: `python -m unittest discover -s tests -v`.
 
-**Sambungan:**
+The creation environment has no usable Python/ComfyUI GPU runtime, so Python tests and end-to-end generation have **not** been run. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
 
-```
-Load Video → Get Video Components ──images──┬──> V2V Edit + LLM.source_video   (fps → source_fps)
-                                            └──> MiniMax H3 Conform Video (24 fps) → pose/depth/canny → control_*
-UNETLoader (ref2va) → LoRA turbo ────────────> V2V Edit + LLM.model
-CLIPLoader (minimax) / VAELoader ────────────> clip / vae
-ModelPatchLoader (Fun ControlNet-Union) ─────> model_patch
-Foto referensi ──────────────────────────────> ref_image_1 (… ref_image_8)
+The example workflows were built using public official templates as integration references. They have not been validated through end-to-end generation.
 
-V2V Edit + LLM.model ───┬──> BasicGuider.model ──┐
-                        └──> BasicScheduler.model │
-V2V Edit + LLM.positive ───> BasicGuider.conditioning
-RandomNoise + KSamplerSelect (res_multistep) + BasicScheduler (simple, 4 step turbo / 20 tanpa LoRA)
-V2V Edit + LLM.latent ─────> SamplerCustomAdvanced → VAEDecode (H3 video VAE)
-                            → CreateVideo (24 fps, audio = Conform.audio) → SaveVideo
-```
+## Sources
 
-Kalau kamu tetap memakai node V2V Edit yang lama, sambungkan `prompt` dari prompter ke `prompt_override`. Labelnya sama (`ref_image` → `<Picture 1..n>`, `first_frame` → `<Picture>` terakhir, sumber → `<Video 1>`). Lewatkan videonya dulu ke Conform Video, supaya kedua node menerima frame yang sama.
+- Official full-reference prompt format: https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_ref_en.md
+- Native H3 nodes: https://github.com/Comfy-Org/ComfyUI/blob/master/comfy_extras/nodes_minimax_h3.py
+- Official R2V template: https://github.com/Comfy-Org/workflow_templates/blob/main/templates/video_minimax_h3_r2v.json
+- Fun ControlNet guide: https://github.com/Comfy-Org/docs/blob/main/tutorials/video/minimax/minimax-h3-fun-controlnet.mdx
+- Qwen 2.1 template: https://github.com/Comfy-Org/workflow_templates/blob/main/templates/image_qwen_image_2_1_image_edit.json
 
-## BerniniR · Long Video (auto segments, 15 s+)
+## Additional included nodes
 
-Untuk Bernini-R (basis Wan 2.2, divalidasi di 81 frame ≈ 5 s @16 fps). Butuh paket **ComfyUI-BerniniR** (node BerniniR · Load Model / Load VAE / Text Encode). Satu node menjalankan seluruh klip:
+The package also includes standalone H3 prompting, image/audio conditioning, V2V conditioning, Qwen keyframe editing, resolution helpers, and color/skin-tone matching nodes for workflows that need separate stages. BerniniR prompt enhancement and long-video helpers are also included; their generation workflows require the corresponding BerniniR model nodes.
 
-1. Video sumber di-resample ke `fps` (16 = native Wan) dari `start_seconds` sampai `max_seconds`, lalu di-crop/resize ke kanvas (`resolution` 480p, aspek ikut sumber, kelipatan 16).
-2. Dipotong jadi segmen `segment_frames` (81) yang saling overlap minimal `overlap_frames` (16), tersebar rata. 15 s @16 fps = 240 frame → 4 segmen (frame 0–80, 53–133, 106–186, 159–239, overlap 28).
-3. Tiap segmen lewat BerniniR Source Media → Sampler → Decode dengan model, `cond` (text encode sekali saja) dan seed yang sama.
-4. `chain_mode` supaya tampilan sama di semua segmen:
-   - `edited overlap as source (chain)` (default): frame overlap di video sumber segmen berikutnya diganti dengan frame yang sudah diedit, jadi segmen baru "melanjutkan" hasil sebelumnya.
-   - `previous frame as reference`: frame pertama overlap (sudah diedit) ditambahkan sebagai gambar referensi tambahan.
-   - `independent`: hanya prompt/seed/referensi yang sama.
-5. Warna tiap segmen disamakan dengan segmen sebelumnya di area overlap (`match_color_between_segments`), lalu di-crossfade.
+The all-in-one example workflows use the R2V Generate and V2V Edit nodes described above. Settings and audio behavior in the separate conditioning nodes can differ.
 
-Output: `frames` (16 fps), `audio` (dipotong pas), `fps`, `frame_count`, `segments`. Interpolasi ke 24/30 fps setelahnya (RIFE / GIMM-VFI) kalau perlu. Di kartu 96 GB, load model **tanpa offload** supaya expert high/low tidak dipindah-pindah di setiap segmen.
+## License
 
-## BerniniR · Prompt Enhancer (local LLM, official templates)
-
-Bernini tidak butuh vLLM. `--use_pe` resmi hanya memanggil endpoint chat kompatibel OpenAI dengan model vision (default GPT). Node ini memakai **template resmi Bernini** (disalin dari `bernini/prompt_enhancer.py`, Apache-2.0) tapi menjalankannya di llama-server lokal (Qwen GGUF + mmproj):
-
-- `task_type`: v2v, rv2v, mv2v, i2i, t2v, t2i, i2v, r2v, r2i, vi2v, vrc2v, ads2v — template sama seperti resmi.
-- `source_video`: 3 frame diambil merata (seperti resmi, bisa diubah lewat `video_frames`); `reference_images` = image0, image1, …
-- r2v / r2i / rv2v meminta JSON `{"rewritten_text": …}` (JSON mode llama-server), hasilnya diambil otomatis.
-- `unload_llm_after`: matikan llama-server setelah prompt jadi supaya VRAM bebas untuk Bernini.
-
-```
-Load Video ─> source_video ─┐
-Instruction ────────────────┼─> BerniniR · Prompt Enhancer ─> prompt ─> BerniniR · Text Encode (task_type sama) ─> cond
-Reference image (rv2v) ─────┘                                                                    └─> BerniniR · Long Video
-```
-
-## MiniMax H3 + Qwen-Image 2.1 Keyframe Video Edit (node baru)
-
-Qwen-Image 2.1 mengedit beberapa **keyframe**, lalu H3 membuat seluruh video melewati keyframe itu. Kualitas edit dari Qwen, kehalusan gerak dan konsistensi antar-frame dari H3. Node ini berdiri sendiri (tidak memakai node V2V Edit).
-
-1. Video sumber → timeline H3 (24 fps, 17k+5) + kanvas (`resolution`, aspek ikut video).
-2. Keyframe diambil tiap `keyframe_every_seconds` (+ frame terakhir kalau `include_last_frame`).
-3. Qwen-Image 2.1 mengedit keyframe 0 dari instruction (+ `ref_image_1..4`, mis. foto dress). Keyframe lain diedit dengan keyframe 0 yang sudah jadi sebagai referensi (`<image2>`), supaya tampilannya sama di semua keyframe. Setting resmi: 25 step, CFG 1, euler / simple. Hasil edit di-cache: mengubah setting H3 tidak mengulang Qwen.
-4. Prompt H3: `LLM simple` (default), `LLM full`, atau `template (no LLM)`.
-5. H3 Reference to Video (`<Video 1>` = sumber, ref, keyframe 0 = `<Picture>` terakhir) + **Add Guide di setiap indeks keyframe** + Fun ControlNet pose (0.9) / depth (0) / edge (0).
-
-Jumlah edit Qwen (dengan frame terakhir):
-
-| video | tiap 2 s | tiap 2,5 s (default) | tiap 3 s | tiap 5 s |
-|---|---|---|---|---|
-| 5 s | 4 | 3 | 3 | 2 |
-| 10 s | 6 | 5 | 4 | 3 |
-| 15 s | 9 | 7 | 6 | 4 |
-
-Butuh ComfyUI 0.37.0+ (node `Text Encode Qwen Image 2.1`). Model Qwen dimuat dengan loader biasa (UNETLoader / CLIPLoader / VAELoader) → `qwen_model`, `qwen_clip`, `qwen_vae`. `qwen_prompt` (opsional, bahasa Inggris) dipakai untuk Qwen; kalau kosong, `instruction` yang dipakai.
-
-Output: `model`, `positive`, `latent` → BasicGuider / BasicScheduler / SamplerCustomAdvanced (denoise 1.0). `edited_keyframes` dan `source_keyframes` untuk preview, `keyframe_indices` = frame mana saja yang dikunci. Audio: sambungkan audio video sumber langsung ke Create Video.
-
-## MiniMax H3 Image(+Audio) to Video + LLM (satu node untuk I2V)
-
-Gambar (+ audio, mis. .mp3 dari Load Audio) → prompt dari LLM → H3 Reference to Video + Add Guide, dalam satu node.
-
-- **resolution**: `768p (native)` (sisi pendek 768, maks 768×1344) atau `480p` (maks 480×832), plus 512/576/640/704p.
-- **aspect_ratio**: `same as image` (ikut aspek gambar input), `9:16`, `16:9`, `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `21:9`, `9:21`. Ukuran selalu kelipatan 32 dan dibatasi luas maksimal H3:
-
-  | aspek | 768p | 480p |
-  |---|---|---|
-  | 9:16 / 16:9 | 768×1344 | 480×832 |
-  | 1:1 | 768×768 | 480×480 |
-  | 2:3 / 3:2 | 768×1152 | 480×704 |
-  | 3:4 / 4:3 | 768×1024 | 480×640 |
-  | 4:5 / 5:4 | 768×960 | 480×608 |
-  | 21:9 / 9:21 | 1536×672 | 960×416 |
-
-- **Multi referensi**: selain `image` (= `<Picture 1>`), ada `image_2` … `image_9` (= `<Picture 2..n>`, dinomori berurutan sesuai yang tersambung). Aspeknya boleh campur (2:3, 9:16, 16:9, …): referensi **tidak di-crop**, H3 hanya mengambil isinya (orang, baju, objek, tempat, gaya). Yang menentukan kanvas hanya `aspect_ratio`, dan `same as image` mengikuti gambar pertama. Tulis perannya di instruction, mis. "wanita di Picture 1 memakai baju di Picture 2, berjalan di jalan dari Picture 3".
-- **first_image_as_first_frame** (default on): video dimulai persis dari gambar. Kalau aspeknya beda dengan gambar, gambar di-crop di tengah (output `first_frame` menunjukkan hasil crop-nya, dan itu juga yang dilihat LLM). Off = gambar hanya referensi (orang/baju/gaya), H3 membuat framing baru sesuai aspek, tanpa crop.
-- **audio_is_soundtrack** (default on): audio = suara video itu sendiri, dipasang persis mulai 0 s (Add Guide audio), jadi bibir/gerak mengikuti audio. Prompt memberi `<Audio 1>` marker `fully_copy` + `audio reuse`. Off = audio hanya referensi (timbre suara / gaya musik), H3 membuat suaranya sendiri. Butuh **audio_vae**.
-- **Panjang video**: default ikut panjang audio (dibulatkan ke atas ke grid 17k+5, maks 15,08 s; audio yang lebih panjang dipotong). Tanpa audio: 5 s. `duration_seconds` atau `frame_count` untuk mengatur manual.
-- Tulis di **instruction** apa isi audionya, karena LLM tidak bisa mendengar: "dia menyanyikan lagu di Audio 1", "dia berbicara", "dia menari mengikuti musik".
-- Output **audio** = audio yang sudah dipotong/ditambah hening sepanjang video → sambungkan ke Create Video.
-
-```
-Load Image ─> image            Load Audio (.mp3) ─> audio
-CLIPLoader (minimax) ─> clip   VAELoader (video) ─> vae   VAELoader (audio) ─> audio_vae
-I2V + LLM.positive ─> BasicGuider (model = H3 ref2va + ModelSamplingMiniMaxH3)
-I2V + LLM.latent ─> SamplerCustomAdvanced → VAEDecode → CreateVideo (fps 24, audio = I2V + LLM.audio)
-```
-
-Node kecil **MiniMax H3 Resolution / Aspect Ratio** memberi `width` / `height` (dan gambar yang sudah di-crop) dengan aturan yang sama, untuk dipakai dengan node H3 resmi.
-
-## Storyboard otomatis dari prompt sederhana (shots + timed_beats)
-
-Cukup tulis prompt singkat, misalnya `kucing melompat ke meja lalu tidur`. Prompter yang menyusun storyboard-nya:
-
-- **`shots`** = `auto` (default): LLM menentukan sendiri jumlah shot (±1 shot per 2,5–5 detik), framing dan gerak kamera tiap shot, serta **waktu setiap potongan** (`[Shot 2] At 00:03.200, …`) supaya ceritanya pas dengan durasi.
-- `shots` = `1` … `6`: jumlah shot dikunci, tapi LLM tetap memilih kapan potongannya. `1` berarti satu shot panjang tanpa potongan.
-- **`timed_beats`** = on: di dalam tiap shot, aksi utamanya juga diberi detik (mis. "At 1.5 s it jumps; at 3.0 s it lands"). Ini eksperimental karena bukan format resmi H3; coba bandingkan hasilnya.
-- Untuk **video editing**, kedua opsi ini diabaikan, karena shot dan gerakan mengikuti video asli.
-
-## Keyframe di tengah video (keyframe_picture + keyframe_seconds)
-
-Selain frame pertama/terakhir (`frame_anchor`), gambar mana pun bisa dikunci di detik tertentu:
-
-- `keyframe_picture` = nomor `<Picture N>` (0 = off), `keyframe_seconds` = detiknya (dibulatkan ke frame @24fps).
-- LLM menulis `<Picture N> is the keyframe of [Shot N] at the S.SS-second mark …` dan "the shot's keyframe corresponds to `<Picture N>`", lalu menambahkan tag `[keyframe completion]`.
-- Output `keyframe_image` dan `keyframe_frame_idx` → **Add Guide for MiniMax H3** (`image` dan `frame_idx`), dirangkai setelah Add Guide untuk first frame kalau ada.
-
-```
-H3 Reference to Video.positive/latent → Add Guide (first_frame, frame_idx 0) → Add Guide (keyframe_image, keyframe_frame_idx) → BasicGuider
-```
-
-Gambar yang sama tetap disambung ke `ref_image_N` di node H3 supaya labelnya ada.
-
-## Prompt simpel (prompt_style = simple)
-
-Di prompter dan V2V Edit + LLM ada pilihan **`prompt_style`**:
-
-- **`full (official H3)`** (default): format resmi 6 bagian.
-- **`simple`**: hanya 1–3 kalimat yang menjelaskan **perubahannya saja**, tanpa bagian lain dan tanpa `[Shot]`. Contoh untuk video editing dengan instruction `change her outfit to black dress`:
-
-  > [video editing] The target video is an edited version of `<Video 1>`: she now wears a knee-length black satin slip dress with thin straps. Everything else - the person's identity, face, hair, body, motion, timing, camera, framing, background and lighting - stays exactly as in `<Video 1>`.
-
-  Awal dan akhir kalimatnya tetap (ditulis oleh node), jadi LLM hanya menulis bagian tengah. Frame video tidak dikirim ke LLM, sehingga prosesnya hanya beberapa detik.
-
-## Lighting berubah setelah edit? (Match Color to Source)
-
-H3 menggambar ulang seluruh frame, jadi exposure, white balance, atau pencahayaan bisa sedikit bergeser. Ada dua perbaikan:
-
-1. **Prompt**: untuk video editing, LLM tidak lagi mendeskripsikan ulang lighting (kata seperti "warm key light" atau "cinematic" membuat H3 menata ulang cahaya). Cukup ditulis "same lighting, exposure and color grade as `<Video 1>`".
-2. **Node MiniMax H3 Match Color to Source** (setelah VAE Decode):
-   ```
-   VAEDecode ─> images
-   V2V Edit + LLM.source_frames ─> source_frames
-   → CreateVideo
-   ```
-   Warna dan kecerahan tiap frame dicocokkan lagi ke video asli (Lab, dihaluskan antar-frame supaya tidak flicker). Kalau warna elemen yang diedit (misalnya dress merah) ikut tertarik ke warna lama, turunkan `strength`.
-
-## Skin tone berbeda dari input? (Match Skin Tone to Source)
-
-Node **MiniMax H3 Match Skin Tone to Source** (setelah VAE Decode, sebelum Create Video):
-
-```
-VAEDecode ─> images
-V2V Edit + LLM.source_frames ─> source_frames
-→ CreateVideo
-```
-
-Tanpa mask: kulit dideteksi otomatis di kedua video. Yang diukur hanya piksel yang kulit di **kedua** video pada posisi yang sama (baju baru atau baju lama tidak ikut dihitung), lalu warnanya digeser ke warna kulit sumber, hanya di area kulit, dengan tepi halus dan statistik yang dihaluskan antar-frame. Latar dan baju tidak disentuh. Bisa dirangkai dengan Match Color (Match Color dulu, lalu Match Skin Tone).
-
-Prompt juga tidak lagi mendeskripsikan warna kulit dengan kata baru ("fair", "porcelain", "glowing"), karena kata-kata itu membuat H3 mengubah warna kulit.
-
-## Contoh pemakaian
-
-**Edit video:** `task = video editing`, `duration_seconds = 0` (ikut panjang video, dipotong ke 17k+5 seperti node H3), `video_1` = frame video, `video_1_audio` = audionya. Suara asli otomatis dipakai ulang (fully_copy) kecuali instruksi bilang lain.
-Audio hasil edit video diambil dari video input, jadi prompt-nya otomatis dibuat hemat di bagian suara: soundscape cukup satu kalimat, musik N/A, dan tidak ada dialog baru. Kalau orangnya berbicara, sambungkan juga `video_1_audio` (dan `ref_video_audio_1` di node H3) supaya gerak bibir mengikuti audio aslinya.
-Instruksi: `ganti jaket pria jadi kulit hitam, latar jadi malam hujan`.
-
-**Reference 1 sebagai frame pertama:** `frame_anchor = reference 1 = first frame`, `image_1` = frame awal, `image_2` = wajah karakter, `image_3` = baju.
-`asset_notes`: `Picture 2 = wajah wanita, Picture 3 = gaun merah yang harus dipakai`.
-
-**Edit gambar:** `task = image edit`, `image_1` = foto. Instruksi: `ubah rambutnya jadi pirang, dia tersenyum lalu melambai`.
-
-## Tips kecepatan
-
-- `thinking = off` (default) adalah mode tercepat.
-- `length = compact` menghasilkan output kira-kira setengah dari standard, jadi sekitar 2× lebih cepat.
-- `video_sample_fps` (default 2, sama dengan cara Qwen di dalam H3 melihat video) dan `video_max_side` (default 512) mengatur berapa banyak frame video yang dilihat LLM. Klip 15 detik di 2 fps = 31 frame. Pakai 1 fps kalau adegannya tenang. Hanya bagian video yang benar-benar dipakai H3 yang dikirim ke LLM.
-- `image_max_side` 512–768 mengurangi token vision (tidak mempengaruhi kualitas video H3).
-- Batas H3: **24 fps**, maksimal **362 frame (~15 detik)**. Video yang lebih panjang dipotong dari awal. Load video dengan `force_rate = 24`.
-- Seed yang sama dengan input yang sama tidak akan dijalankan ulang (cache ComfyUI).
-
-## Instruction vs system prompt
-
-- **instruction** = user prompt: apa yang kamu mau, dalam bahasa apa saja. Peran audio dan musik juga ditulis di sini, misalnya "pakai suara di Audio 1 persis, lip-sync", "suaranya seperti Audio 1", "tanpa musik", atau "musik piano pelan".
-- **System prompt** sudah tertanam di node (aturan resmi MiniMax H3) dan tidak perlu kamu tulis.
-- Kalau instruksi tidak menyebut audio: soundtrack video yang diedit dipakai ulang persis, dan audio mandiri dipakai sebagai referensi timbre suara. Kalau tidak menyebut musik: musik hanya ditambahkan kalau cocok dengan adegannya.
-- Sampling diatur otomatis: rekomendasi Qwen untuk model Qwen, dan setelan netral untuk model lain. Ganti `seed` untuk mendapat variasi.
-# New: all-in-one R2V / V2V generators
-
-See [COMPACT_README.md](COMPACT_README.md) and `example_workflows/` for the new nodes that include model loading, llama.cpp prompting, H3 sampling and video decoding. V2V uses source frame 0 for Qwen Image 2.1 with one optional reference image, automatic pose/Fun ControlNet, and experimental video-only denoising. R2V has a Yes/No first-frame anchor option. These additions are a local extension; end-to-end GPU validation is pending.
-
+MIT. See [LICENSE](LICENSE).

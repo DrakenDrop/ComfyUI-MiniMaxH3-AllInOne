@@ -1,10 +1,10 @@
 # MiniMax H3 All in One
 
-Two additional nodes, built on this repository's llama.cpp prompter and native ComfyUI H3 implementation.
+Integrated R2V and V2V generation nodes with local llama.cpp prompting and native ComfyUI H3 sampling.
 
 ## Install
 
-1. Clone `https://github.com/DrakenDrop/ComfyUI-MiniMaxH3-AllInOne.git` into `ComfyUI/custom_nodes/`. If the original `ComfyUI-MiniMaxH3-Prompter` is installed, remove or move that old folder outside `custom_nodes` first; do not install both copies with duplicate node IDs.
+1. Clone `https://github.com/DrakenDrop/ComfyUI-MiniMaxH3-AllInOne.git` into `ComfyUI/custom_nodes/`. Keep only one installation of this node package in `custom_nodes` to avoid duplicate node IDs.
 2. Use a current ComfyUI with `TextEncodeQwenImage21`, `SDPoseKeypointExtractor`, `MiniMaxH3FunControlNetApply`, and `MiniMaxH3AddGuide` (Qwen Image 2.1 support requires 0.37.0 or newer).
 3. Install requirements using the same Python environment as ComfyUI: `python -m pip install -r requirements.txt`.
 4. Install llama.cpp `llama-server` and set `llama_server_path` in `config.json` (copy `config.example.json`). Put a vision GGUF and its matching mmproj in `ComfyUI/models/LLM/`. Subfolders and split GGUF models are scanned. The model choice `(llama-server yang sudah jalan)` uses an existing server; it does not switch that server's model.
@@ -80,7 +80,7 @@ API signatures and model filenames were checked against current official ComfyUI
 
 The creation environment has no usable Python/ComfyUI GPU runtime, so Python tests and end-to-end generation have **not** been run. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
 
-The uploaded JSON could not be materialized in this environment. The examples use the public official template with the same filename as the uploaded workflow as the integration reference, not a verified byte-for-byte copy of the upload.
+The example workflows were built using public official templates as integration references. They have not been validated through end-to-end generation.
 
 ## Sources
 
@@ -89,4 +89,3 @@ The uploaded JSON could not be materialized in this environment. The examples us
 - Official R2V template: https://github.com/Comfy-Org/workflow_templates/blob/main/templates/video_minimax_h3_r2v.json
 - Fun ControlNet guide: https://github.com/Comfy-Org/docs/blob/main/tutorials/video/minimax/minimax-h3-fun-controlnet.mdx
 - Qwen 2.1 template: https://github.com/Comfy-Org/workflow_templates/blob/main/templates/image_qwen_image_2_1_image_edit.json
-- Original repository: https://github.com/DrakenDrop/ComfyUI-MiniMaxH3-Prompter (MIT license retained)
