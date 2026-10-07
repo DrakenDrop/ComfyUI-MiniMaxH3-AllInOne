@@ -103,6 +103,8 @@ def parse_edit_response(content, style="official"):
     minimax = apply_policy(result["minimax_prompt"], silent=True, style=style)
     if re.search(r"<image\s*\d+>", minimax, re.I):
         raise ValueError("MiniMax prompt contains Qwen image labels.")
-    if not all(tag in minimax for tag in ("<Video 1>", "<Picture 1>", "<Picture 2>")):
-        raise ValueError("MiniMax prompt must reference source video, appearance reference, and edited first frame.")
+    if not all(tag in minimax for tag in ("<Video 1>", "<Picture 1>")):
+        raise ValueError("MiniMax prompt must reference <Video 1> and the Qwen-edited <Picture 1>.")
+    if any(n != "1" for n in re.findall(r"<Picture\s+(\d+)>", minimax, re.I)):
+        raise ValueError("MiniMax receives only one picture: the Qwen-edited <Picture 1>.")
     return qwen.strip(), minimax

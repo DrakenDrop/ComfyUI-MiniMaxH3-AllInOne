@@ -109,12 +109,31 @@ Internally:
 2. Resize/crop the source to the selected canvas. `same as reference` follows the **source video's** aspect ratio in V2V, and the image's aspect ratio in R2V.
 3. Enhance the single user instruction into separate internal Qwen and MiniMax prompts.
 4. Using the Qwen prompt prepared by the shared enhancer, Qwen Image 2.1 edits source frame 0 as Image 1 with the connected reference image as Image 2.
-5. Use the MiniMax prompt prepared by the shared enhancer. Anchor the Qwen-edited frame at frame 0.
+5. Use the MiniMax prompt prepared by the shared enhancer. Supply only the Qwen-edited image as H3's appearance reference, without a forced first-frame guide.
 6. Load the H3 Fun ControlNet Union patch and pass the source IMAGE batch directly to its `control_video` input. No pose preprocessor or mask is used.
-7. Apply the **experimental video-only wrapper**: target audio is a zero-length token stream inside the H3 transformer. The sampler carries a zero audio placeholder only for native AV-container compatibility; its noise generator produces randomness only for video. Nothing is decoded or exported as audio.
-8. Sample and VAE-decode the video frames. Return the frames, the Qwen-generated image before H3 resizing, and the two enhanced prompts; no audio is generated, decoded, or returned.
+7. Select strict video-only sampling (experimental, default), or native AV sampling with discarded audio latents for reference-workflow comparison. See the mode table below.
+8. Sample and VAE-decode the video frames. Return the frames, the Qwen-generated image, and the two enhanced prompts. Neither mode decodes or returns audio; native AV still computes audio latents internally.
 
 `change clothes` preserves source identity and takes the reference outfit. `change person` takes target identity and preserves source performance. A custom instruction can describe either edit in Indonesian or English. Direct RGB control follows the requested workflow; compatibility and motion adherence depend on the selected ControlNet weights. Exact pixel-level/person-motion equality is not guaranteed by a generative model. Full-frame edits can alter backgrounds.
+
+### Comparing against the supplied V2V workflow
+
+The supplied working graph uses source RGB frames directly as Fun ControlNet control, the Qwen result as H3's only reference image, no forced first-frame guide, and `res_multistep` with `simple` scheduling. The all-in-one V2V routing now follows those connections. The raw appearance reference is used only by Qwen. In the MiniMax prompt, `<Picture 1>` means the Qwen-edited image and `<Video 1>` means the source.
+
+`h3_sampling_mode` makes a consequential difference:
+
+| Mode | Internal computation | Output |
+|---|---|---|
+| `strict video-only (experimental)` (default) | Removes audio tokens with the experimental wrapper | Four existing outputs; no audio |
+| `native AV (discard audio)` | Uses the ordinary H3 audio-video sampler and noise, without the wrapper | Four existing outputs; audio latents are discarded without decoding |
+
+Native AV is provided for comparison with the reference graph; it **does compute audio latents internally**. Keep strict mode if the requirement is no audio generation at all. Strict mode is not equivalent to the native graph and can change video quality. Neither mode loads an audio VAE or returns audio.
+
+[V2V H3 reference comparison](example_workflows/v2v_reference_native.json) uses the H3 settings from the supplied working graph: `UnZipMeMultiModal.safetensors`, Fun ControlNet Union 2.0 BF16, FP16 video VAE, 768p, 2 steps, `res_multistep`, `simple`, and `ref_image_size=max`. It explicitly selects native AV. The Qwen settings are retained from the user's confirmed-good Qwen stage (base Qwen 2.1, 6 steps, and the selected Qwen LoRA); this example is for comparing the H3 stage, not a general recommended Qwen preset. Select the installed filenames before running.
+
+Existing nodes retain saved settings after updating: set the scheduler to `simple` explicitly or load the new example. Do not assume that different H3 checkpoints produce comparable results at the same two-step schedule. The reference's native sampling and the previous strict wrapper cannot be compared as if they were the same configuration.
+
+These changes and routing tests do not establish a single proven cause of the reported smearing. No end-to-end GPU reproduction has been performed here.
 
 ### CLIP and VAE selection
 
@@ -158,7 +177,7 @@ Use the Qwen **2.1** diffusion model, encoder and VAE together. Older Qwen Image
 
 V2V exposes one `instruction` field. For example: **"Change her clothes to this"**, with the target outfit connected to `ref_image`.
 
-Before diffusion sampling, the selected vision GGUF reads the source first frame, the reference image and sampled source-motion frames through llama.cpp. A single enhancement response contains two internal strings:
+Before diffusion sampling, the selected vision GGUF reads the source first frame, the reference image and sampled source-motion frames through llama.cpp. A single enhancement response supplies two prompts; official MiniMax sections are normalized into text:
 
 - `qwen_prompt`: an editing directive using `<image1>` for the source first frame and `<image2>` for the reference.
 - `minimax_prompt`: the six-section H3 video-editing prompt, preserving source performance and using the intended edited frame as its frame-0 guide.
@@ -224,7 +243,7 @@ Discovery also applies when configured external-server `autostart` is enabled. S
 
 API signatures and model filenames were checked against current official ComfyUI and Qwen sources. Workflow graph consistency is checked by `tools/check_workflows.cjs`. Unit tests cover canvas sizing, temporal sampling, first-frame prompt policy, audio-tag rejection and the zero-audio-token wrapper contract: `python -m unittest discover -s tests -v`.
 
-Python syntax checks, all 16 unit tests (including discovery and prompt-format regressions), and the workflow graph checks pass. End-to-end generation has **not** been run because no ComfyUI GPU runtime is available here. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
+Python syntax checks, all 18 unit tests (including discovery, prompt-format regressions, and native/strict V2V routing), and the workflow graph checks pass. End-to-end generation has **not** been run because no ComfyUI GPU runtime is available here. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
 
 The example workflows were built using public official templates as integration references. They have not been validated through end-to-end generation.
 

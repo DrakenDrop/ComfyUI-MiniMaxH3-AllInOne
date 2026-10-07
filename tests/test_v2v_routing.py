@@ -1,0 +1,92 @@
+"""CPU routing tests; these do not assess generated image quality."""
+import ast
+from pathlib import Path
+import sys
+import types
+import unittest
+from unittest.mock import Mock, patch
+
+SOURCE = Path(__file__).resolve().parents[1] / "nodes_compact.py"
+
+class Tensor:
+    def __init__(self, label, count=22, width=768, height=1344):
+        self.label, self.shape = label, (count, height, width, 3)
+        self.ndim, self.device = 4, "cpu"
+    def __len__(self):
+        return self.shape[0]
+    def __getitem__(self, key):
+        if isinstance(key, slice):
+            return Tensor(self.label, len(range(self.shape[0])[key]), self.shape[2], self.shape[1])
+        return self
+    def __repr__(self):
+        return self.label
+
+class V2VRoutingTests(unittest.TestCase):
+    def run_mode(self, mode):
+        source, target = Tensor("source"), Tensor("target", 1)
+        edited = Tensor("qwen", 1, 1024, 1024)
+        conditioning = Mock(return_value=("positive", "latent"))
+        control = Mock(return_value=("controlled-model",))
+        qwen = Mock(return_value=edited)
+        wrapper = Mock(return_value="strict-model")
+        h3 = types.SimpleNamespace(
+            MiniMaxH3ReferenceToVideo=types.SimpleNamespace(execute=conditioning),
+            MiniMaxH3FunControlNetApply=types.SimpleNamespace(execute=control))
+        modules = {
+            "torch": types.SimpleNamespace(tensor=lambda value, **kw: value, long=object()),
+            "nodes": types.SimpleNamespace(),
+            "comfy_extras": types.SimpleNamespace(nodes_minimax_h3=h3),
+            "routing_pkg.nodes_h3qwen": types.SimpleNamespace(
+                MiniMaxH3QwenKeyframeEdit=types.SimpleNamespace(_qwen_edit=qwen)),
+            "routing_pkg.h3_prompter": types.SimpleNamespace(llama_client=types.SimpleNamespace(log=lambda msg: None)),
+        }
+        class Pipeline:
+            def _load(self, kind, name):
+                return kind + ":" + name
+            def _base_models(self, **kw):
+                return "h3-model", "h3-clip", "h3-vae"
+            def _sample(self, *args, **kw):
+                self.sample_args, self.sample_kw = args, kw
+                return source, "sampled"
+        tree = ast.parse(SOURCE.read_text())
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "MiniMaxH3V2VGenerate")
+        namespace = dict(__name__="routing_pkg.nodes_compact", __package__="routing_pkg",
+                         _Pipeline=Pipeline, CATEGORY="test", NONE="(none)",
+                         args=lambda output: output, patch_video_only=wrapper,
+                         geometry=types.SimpleNamespace(
+                             video_timeline=lambda *a: (22, list(range(22))),
+                             canvas=lambda *a: (768, 1344)),
+                         v2v=types.SimpleNamespace(resize_frames=lambda image, *a: image))
+        exec(compile(ast.Module(body=[cls], type_ignores=[]), str(SOURCE), "exec"), namespace)
+        node = namespace["MiniMaxH3V2VGenerate"]()
+        node._enhance_edit = Mock(return_value=("qwen prompt", "H3 prompt"))
+        with patch.dict(sys.modules, modules):
+            result = node.generate(
+                source, target, "fun", "qwen-model", "qwen-clip", "qwen-vae", "custom",
+                h3_sampling_mode=mode, instruction="change clothes", resolution="768p (native)",
+                aspect_ratio="same as reference", custom_aspect="16:9", seed=1, steps=2,
+                sampler_name="res_multistep", scheduler="simple")
+        self.assertEqual(conditioning.call_args.kwargs["ref_images"], {"ref_image_0": edited})
+        self.assertIsNone(conditioning.call_args.kwargs["audio_vae"])
+        self.assertEqual(conditioning.call_args.kwargs["ref_videos"]["ref_video_0"].label, "source")
+        self.assertEqual(control.call_args.kwargs["control_video"].label, "source")
+        self.assertEqual(node.sample_args[5:8], (2, "res_multistep", "simple"))
+        self.assertIs(result[1], edited)
+        self.assertEqual(result[2:], ("H3 prompt", "qwen prompt"))
+        self.assertEqual([t.label for t in qwen.call_args.args[4]], ["source", "target"])
+        return node, wrapper
+
+    def test_native_matches_reference_routing_without_audio_wrapper(self):
+        node, wrapper = self.run_mode("native AV (discard audio)")
+        wrapper.assert_not_called()
+        self.assertFalse(node.sample_kw["silent"])
+        self.assertEqual(node.sample_args[0], "controlled-model")
+
+    def test_strict_remains_explicitly_video_only(self):
+        node, wrapper = self.run_mode("strict video-only (experimental)")
+        wrapper.assert_called_once_with("controlled-model")
+        self.assertTrue(node.sample_kw["silent"])
+        self.assertEqual(node.sample_args[0], "strict-model")
+
+if __name__ == "__main__":
+    unittest.main()

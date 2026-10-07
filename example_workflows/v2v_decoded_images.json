@@ -195,7 +195,7 @@
         "16:9",
         20,
         "res_multistep",
-        "beta",
+        "simple",
         0,
         "minimax_h3_fun_controlnet_union_pruned_int8_convrot.safetensors",
         "qwen_image_2.1_int8_convrot.safetensors",
@@ -205,7 +205,7 @@
         "",
         "(none)",
         1,
-        "match",
+        "max",
         3072,
         32768,
         "http://127.0.0.1:8080",
@@ -217,7 +217,8 @@
         25,
         1024,
         "(none)",
-        1
+        1,
+        "strict video-only (experimental)"
       ],
       "widgets_values_named": {
         "h3_model": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
@@ -231,7 +232,7 @@
         "custom_aspect": "16:9",
         "steps": 20,
         "sampler_name": "res_multistep",
-        "scheduler": "beta",
+        "scheduler": "simple",
         "seed": 0,
         "fun_controlnet": "minimax_h3_fun_controlnet_union_pruned_int8_convrot.safetensors",
         "qwen_model": "qwen_image_2.1_int8_convrot.safetensors",
@@ -241,7 +242,7 @@
         "additional_system_prompt": "",
         "lora_name": "(none)",
         "lora_strength": 1,
-        "ref_image_size": "match",
+        "ref_image_size": "max",
         "max_tokens": 3072,
         "context_size": 32768,
         "server_url": "http://127.0.0.1:8080",
@@ -253,7 +254,8 @@
         "qwen_steps": 25,
         "qwen_resolution": 1024,
         "qwen_lora_name": "(none)",
-        "qwen_lora_strength": 1
+        "qwen_lora_strength": 1,
+        "h3_sampling_mode": "strict video-only (experimental)"
       }
     },
     {

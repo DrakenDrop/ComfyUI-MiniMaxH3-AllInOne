@@ -20,7 +20,7 @@ def load(name, filename):
 fmt = load("format_under_test", "prompt_format.py")
 discovery = load("discovery_under_test", "server_discovery.py")
 SECTIONS = dict(zip(fmt.FIELDS, (
-    "<Video 1> is the source. <Picture 1> supplies clothing. <Picture 2> is the first frame.",
+    "<Video 1> is the source. <Picture 1> is the Qwen-edited appearance reference.",
     "[video editing] Change the outfit.",
     "<Video 1>: fully_preserved - motion.",
     "[Shot 1] The person walks in the target outfit.", "N/A", "N/A")))
@@ -45,7 +45,7 @@ class PromptRegressionTests(unittest.TestCase):
         qwen = "Edit <image1> using the outfit in <image2>."
         pair = {"qwen_prompt": qwen, "minimax_prompt": SECTIONS}
         self.assertEqual(fmt.parse_edit_response(json.dumps(pair)), (qwen, PLAIN))
-        simple = "Edit <Video 1> using <Picture 1>, beginning from <Picture 2>."
+        simple = "Edit <Video 1> using the appearance in <Picture 1>."
         pair["minimax_prompt"] = simple
         q, m = fmt.parse_edit_response(json.dumps(pair), style="simple")
         self.assertEqual(q, qwen)

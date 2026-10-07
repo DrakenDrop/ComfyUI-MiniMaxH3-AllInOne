@@ -204,7 +204,7 @@ class MiniMaxH3V2VGenerate(_Pipeline):
     FUNCTION = "generate"
     RETURN_TYPES = ("IMAGE", "IMAGE", "STRING", "STRING")
     RETURN_NAMES = ("images", "qwen_image", "minimax_prompt", "qwen_prompt")
-    DESCRIPTION = "Source IMAGE batch (24 FPS) + reference IMAGE -> Qwen Image 2.1 first-frame edit -> Fun ControlNet -> H3 sampler -> VAE Decode IMAGE frames. Also returns the decoded Qwen edit before H3 resizing as qwen_image and both enhanced prompts. No audio generation. Video-only denoising is experimental."
+    DESCRIPTION = "Source IMAGE batch (24 FPS) + reference IMAGE -> Qwen Image 2.1 first-frame edit -> Fun ControlNet -> H3 sampler -> VAE Decode IMAGE frames. Also returns the decoded Qwen edit before H3 resizing as qwen_image and both enhanced prompts. Silent IMAGE outputs. Strict video-only is experimental; native AV mode computes audio latents internally and discards them."
 
 
     def _enhance_edit(self, source, reference, instruction, frames, **kw):
@@ -241,9 +241,10 @@ class MiniMaxH3V2VGenerate(_Pipeline):
             "the requested identity. Write English prose unless the request is Chinese. "
             "Do not include video motion instructions in qwen_prompt. "
             "For minimax_prompt follow the H3 format below. Its asset labels DIFFER from Qwen: "
-            "<Video 1> is the source performance; <Picture 1> is the supplied appearance reference; "
-            "<Picture 2> will be the Qwen-edited first frame, anchored at frame 0. "
-            "Picture 2 has not been generated yet: describe its intended role, not invented observations. "
+            "<Video 1> is the source performance; <Picture 1> will be the Qwen-edited image. "
+            "The supplied raw appearance reference is used by Qwen only, not supplied directly to H3. "
+            "Picture 1 has not been generated yet: describe its intended edited appearance, not invented observations. "
+            "Picture 1 is an appearance reference, not a pinned first-frame guide. Do not mention Picture 2. "
             "The target appearance must exist from frame 0 throughout the clip, not transform gradually. "
             "Preserve source timing, actions, camera and shots. Do not invent motion or sound. "
             "Use [video editing] and describe silent video only. "
@@ -251,8 +252,8 @@ class MiniMaxH3V2VGenerate(_Pipeline):
             + ("H3 formatting rules (apply ONLY to minimax_prompt):\n" + prompts.SYSTEM_PROMPT_R2V
                if style == "official" else
                "For minimax_prompt write 2-4 concise English sentences describing the requested edit, "
-               "the roles of <Video 1>, <Picture 1>, and <Picture 2>, preserved motion/camera/timing, "
-               "and the first-frame anchor. No section headings, retention analysis or shot list.")
+               "the roles of <Video 1> and the Qwen-edited <Picture 1>, and preserved motion/camera/timing. "
+               "No pinned frame, section headings, retention analysis or shot list.")
         )
         extra = str(kw.get("additional_system_prompt", "")).strip()
         if extra:
@@ -283,7 +284,7 @@ class MiniMaxH3V2VGenerate(_Pipeline):
                     media.image_batch_to_pil(source[i:i + 1])[0], 512)}},
             ])
         for label, tensor in (("<image1>: source first frame, canvas for Qwen.", source[:1]),
-                              ("<image2>: target reference, also H3 <Picture 1>.", reference)):
+                              ("<image2>: target appearance for Qwen; H3 receives only the resulting edit as <Picture 1>.", reference)):
             parts.extend([
                 {"type": "text", "text": label},
                 {"type": "image_url", "image_url": {"url": media.pil_to_data_url(
@@ -314,8 +315,11 @@ class MiniMaxH3V2VGenerate(_Pipeline):
             "qwen_vae": (choices("vae", ["qwen_image_2.1", "qwen_image21", "qwen_image"]), {"tooltip": "Qwen Image 2.1 VAE loaded internally from models/vae; decodes qwen_image."}),
             "edit_mode": (["change clothes", "change person", "custom"], {"default": "change clothes"}),
         })
+        import comfy.samplers
+        required["scheduler"] = (list(comfy.samplers.SCHEDULER_NAMES), {"default": "simple"})
         optional = extra_inputs()
         optional.pop("prompt_override", None)
+        optional["ref_image_size"] = (["match", "max"], {"default": "max"})
         optional.update({
             "start_seconds": ("FLOAT", {"default": 0.0, "min": 0, "max": 3600}),
             "max_seconds": ("FLOAT", {"default": 15.08, "min": 0.21, "max": 15.08}),
@@ -324,13 +328,15 @@ class MiniMaxH3V2VGenerate(_Pipeline):
             "qwen_resolution": ("INT", {"default": 1024, "min": 512, "max": 2048, "step": 32}),
             "qwen_lora_name": (choices("loras", ["qwen"], optional=True), {"tooltip": "LoRA for the Qwen Image 2.1 diffusion model only, loaded from models/loras. Select (none) to disable."}),
             "qwen_lora_strength": ("FLOAT", {"default": 1.0, "min": 0, "max": 2, "step": 0.05, "tooltip": "Strength of the Qwen image-edit LoRA; 0 disables it."}),
+            "h3_sampling_mode": (["strict video-only (experimental)", "native AV (discard audio)"], {"default": "strict video-only (experimental)", "tooltip": "Native AV matches the reference sampler but internally denoises audio latents; audio is never decoded or returned. Strict removes audio tokens and can change visual quality."}),
         })
         return {"required": required, "optional": optional}
 
     def generate(self, source_video, ref_image, fun_controlnet, qwen_model,
                  qwen_text_encoder, qwen_vae, edit_mode, start_seconds=0.0, max_seconds=15.08,
                  control_strength=1.0, qwen_steps=25, qwen_resolution=1024,
-                 qwen_lora_name=NONE, qwen_lora_strength=1.0, **kw):
+                 qwen_lora_name=NONE, qwen_lora_strength=1.0,
+                 h3_sampling_mode="strict video-only (experimental)", **kw):
         import torch
         import nodes
         from comfy_extras import nodes_minimax_h3 as h3
@@ -338,6 +344,9 @@ class MiniMaxH3V2VGenerate(_Pipeline):
 
         if source_video.ndim != 4 or source_video.shape[-1] < 3 or len(source_video) == 0:
             raise ValueError("source_video must be a non-empty IMAGE batch [frames, height, width, RGB] at 24 FPS")
+        if h3_sampling_mode not in ("strict video-only (experimental)", "native AV (discard audio)"):
+            raise ValueError(f"Unknown H3 sampling mode: {h3_sampling_mode}")
+        strict_video_only = h3_sampling_mode == "strict video-only (experimental)"
         original = source_video[..., :3]
         # IMAGE batches carry no timing metadata. Match native H3 ref_video's 24 FPS contract.
         fps = 24.0
@@ -368,21 +377,22 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         qwen_image = MiniMaxH3QwenKeyframeEdit._qwen_edit(qm, qc, qv, edit_text,
             qwen_images, kw["seed"], qwen_steps, 1.0, "euler", "simple", qwen_resolution)
         del qm, qc, qv, qloader
-        first = v2v.resize_frames(qwen_image, w, h)
 
         model, clip, vae = self._base_models(**kw)
         positive, latent = args(h3.MiniMaxH3ReferenceToVideo.execute(
             clip=clip, vae=vae, audio_vae=None, prompt=prompt, width=w, height=h, length=frames,
-            ref_image_size=kw.get("ref_image_size", "match"),
-            ref_images={"ref_image_0": ref_image[:1], "ref_image_1": first},
+            ref_image_size=kw.get("ref_image_size", "max"),
+            ref_images={"ref_image_0": qwen_image},
             ref_videos={"ref_video_0": source}, ref_video_audios=None, ref_audios=None))[:2]
-        positive = args(h3.MiniMaxH3AddGuide.execute(positive=positive, latent=latent, frame_idx=0, vae=vae, image=first))[0]
         patch = self._load("patch", fun_controlnet)
         model = args(h3.MiniMaxH3FunControlNetApply.execute(
             model=model, model_patch=patch, vae=vae, strength=control_strength,
             start_percent=0.0, end_percent=1.0, control_video=source))[0]
-        model = patch_video_only(model)
-        images, _ = self._sample(model, positive, latent, vae, kw["seed"], kw["steps"], kw["sampler_name"], kw["scheduler"], silent=True)
+        from .h3_prompter import llama_client as lc
+        lc.log(f"V2V sampling: {h3_sampling_mode}; scheduler={kw['scheduler']}; steps={kw['steps']}; Qwen steps={qwen_steps}")
+        if strict_video_only:
+            model = patch_video_only(model)
+        images, _ = self._sample(model, positive, latent, vae, kw["seed"], kw["steps"], kw["sampler_name"], kw["scheduler"], silent=strict_video_only)
         images = images[:frames]
         return images, qwen_image, prompt, qwen_prompt
 
