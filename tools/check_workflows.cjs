@@ -22,7 +22,8 @@ for (const file of fs.readdirSync(path.join(root, 'example_workflows')).filter(f
   }
   const pipeline = graph.nodes.find(n => n.type.startsWith('MiniMaxH3'));
   assert(pipeline);
-  assert.equal(pipeline.outputs[0].type, 'VIDEO');
+  assert.equal(pipeline.outputs[0].type, 'IMAGE');
+  assert.equal(pipeline.outputs[1].type, 'VIDEO');
   assert.equal(pipeline.widgets_values_named.resolution, '480p');
   if (pipeline.type === 'MiniMaxH3V2VGenerate') {
     assert(!pipeline.inputs.some(i => i.type === 'AUDIO'));
