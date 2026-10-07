@@ -326,5 +326,5 @@ class MiniMaxH3QwenKeyframeEdit:
 
 
 NODE_CLASS_MAPPINGS = {"MiniMaxH3QwenKeyframeEdit": MiniMaxH3QwenKeyframeEdit}
-NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3QwenKeyframeEdit": "MiniMax H3 + Qwen-Image 2.1 Keyframe Video Edit"}
+NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3QwenKeyframeEdit": "MiniMax H3 + Qwen-Image 2.1 Keyframe Conditioning (Requires Sampler)"}
 

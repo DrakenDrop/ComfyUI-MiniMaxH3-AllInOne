@@ -13,7 +13,7 @@ All-in-one ComfyUI nodes for **MiniMax H3 reference-to-video (R2V)** and **exper
 - 360p, 480p, and native 768p resolution presets.
 - Reference-based, standard, and custom aspect ratios.
 - An R2V option to use reference image 1 as the first frame.
-- VIDEO output that connects directly to Save Video.
+- Primary decoded IMAGE output for Preview Image or Video Combine, plus VIDEO output for Save Video.
 
 **Status:** End-to-end GPU validation is pending. Silent V2V denoising is experimental, and exact motion reproduction is not guaranteed.
 
@@ -49,6 +49,20 @@ Each workflow uses standard media loaders, one generation node, and Save Video. 
 3. Install requirements using the same Python environment as ComfyUI: `python -m pip install -r requirements.txt`.
 4. Install llama.cpp `llama-server` and set `llama_server_path` in `config.json` (copy `config.example.json`). Put a vision GGUF and its matching mmproj in `ComfyUI/models/LLM/`. Subfolders and split GGUF models are scanned. The model choice `(llama-server yang sudah jalan)` uses an existing server; it does not switch that server's model.
 5. Restart ComfyUI and open one of the workflows in `example_workflows/`. Select installed model filenames in the main node; placeholder filenames in the workflows are examples.
+
+## Decoded IMAGE output
+
+Select **MiniMax H3 R2V Generate (Sample + VAE Decode)** or **MiniMax H3 V2V Generate (Sample + VAE Decode, Silent)** from **MiniMax H3 / All in One**.
+
+The primary `images` output is an **IMAGE batch of generated frames after the internal sampler and VAE Decode**. Connect it directly to **Preview Image** or **VHS Video Combine**. For Video Combine, set the frame rate to **24 FPS**; R2V can also supply its `audio` output. V2V has no audio output.
+
+The second output, `video`, remains available for **Save Video**. No external sampler or VAE Decode node is needed.
+
+Nodes labeled **Conditioning (Requires Sampler)** are separate advanced nodes and return intermediate model/conditioning/latent data.
+
+**Updating existing workflows:** the first two outputs have changed order to `images`, then `video`. Reconnect these sockets on existing generation nodes, or load the updated examples. The node class IDs and input settings remain the same.
+
+Try [V2V decoded IMAGE frames](example_workflows/v2v_decoded_images.json) for a minimal source-video → generation → Preview Image workflow.
 
 ## R2V Generate
 

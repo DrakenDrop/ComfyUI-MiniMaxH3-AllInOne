@@ -150,9 +150,9 @@ class _Pipeline:
 class MiniMaxH3R2VGenerate(_Pipeline):
     CATEGORY = CATEGORY
     FUNCTION = "generate"
-    RETURN_TYPES = ("VIDEO", "IMAGE", "AUDIO", "STRING", "INT", "INT", "INT")
-    RETURN_NAMES = ("video", "images", "audio", "prompt", "width", "height", "frame_count")
-    DESCRIPTION = "Image + audio -> local llama.cpp prompter -> H3 R2V -> sampler -> video with audio. All model loaders are internal."
+    RETURN_TYPES = ("IMAGE", "VIDEO", "AUDIO", "STRING", "INT", "INT", "INT")
+    RETURN_NAMES = ("images", "video", "audio", "prompt", "width", "height", "frame_count")
+    DESCRIPTION = "Image + audio -> local llama.cpp prompter -> H3 R2V -> sampler -> VAE Decode IMAGE frames, plus VIDEO and AUDIO. All model loaders are internal."
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -195,15 +195,15 @@ class MiniMaxH3R2VGenerate(_Pipeline):
         else:
             audio = args(nodes_audio.VAEDecodeAudio.execute(samples=sampled, vae=audio_vae))[0]
         video = args(nodes_video.CreateVideo.execute(images=images, fps=24.0, audio=audio))[0]
-        return video, images, audio, prompt, w, h, frames
+        return images, video, audio, prompt, w, h, frames
 
 
 class MiniMaxH3V2VGenerate(_Pipeline):
     CATEGORY = CATEGORY
     FUNCTION = "generate"
-    RETURN_TYPES = ("VIDEO", "IMAGE", "STRING", "IMAGE", "IMAGE", "INT", "INT", "INT")
-    RETURN_NAMES = ("video", "images", "prompt", "edited_reference", "control_pose", "width", "height", "frame_count")
-    DESCRIPTION = "VIDEO + optional target image -> Qwen Image 2.1 first-frame edit -> pose/Fun ControlNet -> H3 sampler -> silent video. Video-only denoising is experimental."
+    RETURN_TYPES = ("IMAGE", "VIDEO", "STRING", "IMAGE", "IMAGE", "INT", "INT", "INT")
+    RETURN_NAMES = ("images", "video", "prompt", "edited_reference", "control_pose", "width", "height", "frame_count")
+    DESCRIPTION = "VIDEO + optional target image -> Qwen Image 2.1 first-frame edit -> pose/Fun ControlNet -> H3 sampler -> VAE Decode IMAGE frames and silent VIDEO. Video-only denoising is experimental."
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -322,9 +322,9 @@ class MiniMaxH3V2VGenerate(_Pipeline):
             m = mask[..., None].to(images.device)
             images = images * m + source.to(images.device) * (1 - m)
         video = args(nodes_video.CreateVideo.execute(images=images, fps=24.0, audio=None))[0]
-        return video, images, prompt, first, pose, w, h, frames
+        return images, video, prompt, first, pose, w, h, frames
 
 
 NODE_CLASS_MAPPINGS = {"MiniMaxH3R2VGenerate": MiniMaxH3R2VGenerate, "MiniMaxH3V2VGenerate": MiniMaxH3V2VGenerate}
-NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3R2VGenerate": "MiniMax H3 R2V Generate (All in One)",
-                              "MiniMaxH3V2VGenerate": "MiniMax H3 V2V Edit (Qwen + FunControlNet, Silent)"}
+NODE_DISPLAY_NAME_MAPPINGS = {"MiniMaxH3R2VGenerate": "MiniMax H3 R2V Generate (Sample + VAE Decode)",
+                              "MiniMaxH3V2VGenerate": "MiniMax H3 V2V Generate (Sample + VAE Decode, Silent)"}
