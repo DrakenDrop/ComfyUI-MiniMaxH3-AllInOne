@@ -339,6 +339,42 @@ class PreprocessingTests(unittest.TestCase):
             node._prompt(ref_image=self.reference, frames=5, instruction="scene", llm_model="llm",
                          mmproj="auto", seed=1, minimax_prompt_style="simple", minimax_thinking=mode)
             self.assertEqual(generator.call_args.kwargs["thinking"], mode)
+        self.unload.reset_mock()
+        node._prompt(ref_image=self.reference, frames=5, instruction="scene", llm_model="llm",
+                     mmproj="auto", seed=1, minimax_prompt_style="simple", keep_models_loaded=True)
+        self.unload.assert_not_called()
+
+    def test_keep_models_skips_forced_unload_on_enhancer_miss(self):
+        self.enhance(keep_models_loaded=True)
+        self.enhance(keep_models_loaded=True, seed=2)
+        self.assertEqual(self.request.call_count, 2)
+        self.unload.assert_not_called()
+        self.enhance(keep_models_loaded=False, seed=3)
+        self.unload.assert_called_once()
+
+    def test_keep_qwen_loader_reuses_weights_across_new_edits(self):
+        tree = ast.parse((ROOT / "nodes_compact.py").read_text())
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "_Pipeline")
+        ns = dict(NONE="(none)", os=os)
+        exec(compile(ast.Module(body=[cls], type_ignores=[]), "nodes_compact.py", "exec"), ns)
+        loads = Mock(side_effect=lambda name, *args: (object(),))
+        native = types.SimpleNamespace(UNETLoader=lambda: types.SimpleNamespace(load_unet=loads),
+                    CLIPLoader=lambda: types.SimpleNamespace(load_clip=loads),
+                    VAELoader=lambda: types.SimpleNamespace(load_vae=loads))
+        globals_ = self.node._cached_qwen_edit.__func__.__globals__
+        with patch.dict(globals_, {"_Pipeline": ns["_Pipeline"]}), patch.dict(sys.modules, {"nodes": native}):
+            self.edit(keep_models_loaded=True)
+            self.edit(keep_models_loaded=True, seed=2)
+            self.assertEqual(self.qwen.call_count, 2)
+            self.assertEqual(loads.call_count, 3)
+            (self.root / "model").write_bytes(b"changed weights")
+            self.edit(keep_models_loaded=True, seed=3)
+            self.assertEqual(loads.call_count, 4)
+            self.edit(keep_models_loaded=False, seed=3)  # same cached output
+            self.assertIsNone(self.node._qwen_loader)
+            self.assertEqual(loads.call_count, 4)
+            self.edit(keep_models_loaded=False, seed=4)
+            self.assertEqual(loads.call_count, 7)
 
     def test_split_gguf_stamp_tracks_all_shards(self):
         first = self.root / "model-00001-of-00002.gguf"

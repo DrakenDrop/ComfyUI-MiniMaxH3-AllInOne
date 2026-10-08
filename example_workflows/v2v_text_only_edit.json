@@ -182,7 +182,8 @@
         "rgb source (legacy)",
         512,
         "off",
-        "off"
+        "off",
+        false
       ],
       "widgets_values_named": {
         "h3_model": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
@@ -224,7 +225,8 @@
         "motion_control": "rgb source (legacy)",
         "pose_resolution": 512,
         "qwen_thinking": "off",
-        "minimax_thinking": "off"
+        "minimax_thinking": "off",
+        "keep_models_loaded": false
       }
     },
     {

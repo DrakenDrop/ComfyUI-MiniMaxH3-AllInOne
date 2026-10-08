@@ -181,6 +181,14 @@ Presets: 360p, 480p, native 768p. All canvases use multiples of 32. `360p` means
 
 Also available: 1:1, 4:3, 3:4, 3:2, 2:3, 21:9, same as reference, custom. Set custom as `width:height`, e.g. `5:4`. Changing aspect ratio crops the source/reference and affects framing.
 
+### Keep models loaded between runs
+
+Set `keep_models_loaded=true` on the all-in-one node to skip its explicit `unload_all_models()` before an enhancer cache miss. V2V also retains its Qwen model, encoder, and VAE loader objects across edits, reusing unchanged weights even when the seed or prompt changes. Changed model paths or file metadata replace the corresponding cached object. H3/FunControlNet loader objects already persist within the node. Qwen LoRA patches are still applied for each new edit.
+
+The default is `false` to preserve previous memory behavior. This is a retention preference, not a VRAM lock: ComfyUI can still offload models under memory pressure, and other nodes or cleanup extensions can unload them. Keeping the models and an external llama.cpp process on the same GPU requires enough free memory for both weights and runtime allocations. Turning the option off releases this node's retained Qwen loader; it does not force an immediate global memory purge on a cached run.
+
+`unload_llm_after_prompt` is independent: it controls stopping the managed llama.cpp server, not H3 or FunControlNet. Keeping it `true` releases LLM memory before diffusion. `reuse_preprocessing=true` can skip identical enhancer/Qwen work entirely. The new option reduces avoidable unloading and loader reconstruction; it does not promise faster denoising. Compare the stage timings on consecutive runs.
+
 ### Separate enhancer thinking controls
 
 V2V exposes `qwen_thinking` for the Qwen image-edit prompt and `minimax_thinking` for the H3 video prompt. Each offers `off`, `low`, `medium`, and `xhigh`, defaulting to `off`. R2V exposes only `minimax_thinking`. These control the llama.cpp prompt enhancer, not Qwen/H3 diffusion sampling. Both use the selected `llm_model` and `mmproj`.
@@ -244,7 +252,7 @@ Keep the working model, scheduler, steps and resolution for the first timing com
 
 API signatures and model filenames were checked against current official ComfyUI and Qwen sources. Workflow graph consistency is checked by `tools/check_workflows.cjs`. Unit tests cover canvas sizing, temporal sampling, first-frame prompt policy, audio-tag rejection and the zero-audio-token wrapper contract: `python -m unittest discover -s tests -v`.
 
-Python syntax checks, all 48 unit tests (including discovery, prompt-format regressions, and native/strict V2V routing), and the workflow graph checks pass. End-to-end generation has **not** been run because no ComfyUI GPU runtime is available here. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
+Python syntax checks, all 50 unit tests (including discovery, prompt-format regressions, and native/strict V2V routing), and the workflow graph checks pass. End-to-end generation has **not** been run because no ComfyUI GPU runtime is available here. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
 
 The example workflows were built using public official templates as integration references. They have not been validated through end-to-end generation.
 

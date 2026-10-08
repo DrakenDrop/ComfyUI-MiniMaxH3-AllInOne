@@ -92,7 +92,7 @@ class _Pipeline:
     def _prompt(self, *, ref_image, frames, instruction, llm_model, mmproj, seed,
                 video=None, first_frame=None, audio=None, additional_system_prompt="",
                 prompt_override="", max_tokens=3072, context_size=32768,
-                server_url="http://127.0.0.1:8080", unload_llm_after_prompt=True, minimax_prompt_style="official", minimax_thinking="off", **unused):
+                server_url="http://127.0.0.1:8080", unload_llm_after_prompt=True, minimax_prompt_style="official", minimax_thinking="off", keep_models_loaded=False, **unused):
         if minimax_thinking not in prompter.THINKING:
             raise ValueError(f"Unknown minimax_thinking: {minimax_thinking}")
         if prompt_override.strip():
@@ -100,7 +100,8 @@ class _Pipeline:
         else:
             # llama.cpp runs outside ComfyUI's memory manager.
             import comfy.model_management
-            comfy.model_management.unload_all_models()
+            if not keep_models_loaded:
+                comfy.model_management.unload_all_models()
             assets = {"image_1": ref_image}
             if video is not None:
                 assets["video_1"] = video
@@ -174,6 +175,7 @@ class MiniMaxH3R2VGenerate(_Pipeline):
         })
         optional = extra_inputs()
         optional.update({"minimax_thinking": (list(prompter.THINKING), {"default": "off", "tooltip": "Thinking for the llama.cpp prompt enhancer: off, low, medium, xhigh. Actual support depends on the selected model and server. Higher thinking can use more time and max_tokens; does not change diffusion steps."})})
+        optional.update({"keep_models_loaded": ("BOOLEAN", {"default": False, "tooltip": "Skip forced ComfyUI model unloading before the LLM enhancer and retain Qwen loaders across runs. Uses more memory; ComfyUI may still offload as needed. Leave room for llama.cpp, which has separate GPU memory management."})})
         return {"required": required, "optional": optional}
 
     def generate(self, ref_image, ref_audio, h3_audio_vae, duration_seconds, audio_mode,
@@ -344,7 +346,11 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         else:
             cache.clear()
         lc.log("V2V cache: enhancer miss." if reuse else "V2V cache: enhancer disabled (or external server).")
-        comfy.model_management.unload_all_models()
+        if kw.get("keep_models_loaded", False):
+            lc.log("V2V memory: keeping ComfyUI models; skipping forced unload before enhancer.")
+        else:
+            lc.log("V2V memory: unloading ComfyUI models before enhancer to make room for llama.cpp.")
+            comfy.model_management.unload_all_models()
         if model_path:
             server_url = managed_server.ensure(model_path, mmproj_path, kw.get("context_size", 32768), CFG)
         else:
@@ -402,12 +408,15 @@ class MiniMaxH3V2VGenerate(_Pipeline):
 
 
     def _cached_qwen_edit(self, source, reference, prompt, seed, model_name, encoder_name,
-                          vae_name, lora_name, lora_strength, steps, resolution, reuse):
+                          vae_name, lora_name, lora_strength, steps, resolution, reuse, keep_models_loaded=False):
         import folder_paths
         import nodes
         from .nodes_h3qwen import MiniMaxH3QwenKeyframeEdit
         from .h3_prompter import llama_client as lc
 
+        # Release this node's retained loader even when the image cache hits.
+        if not keep_models_loaded:
+            self._qwen_loader = None
         if not hasattr(self, "_qwen_result_cache"):
             self._qwen_result_cache = perf.SingleEntryCache()
         cache = self._qwen_result_cache
@@ -430,7 +439,12 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         else:
             cache.clear()
         lc.log("V2V cache: Qwen miss." if reuse else "V2V cache: Qwen disabled.")
-        qloader = _Pipeline()
+        if keep_models_loaded:
+            if getattr(self, "_qwen_loader", None) is None:
+                self._qwen_loader = _Pipeline()
+            qloader = self._qwen_loader
+        else:
+            qloader = _Pipeline()
         qm = qloader._load("model", model_name)
         if lora_name != NONE and lora_strength != 0:
             qm = nodes.LoraLoaderModelOnly().load_lora_model_only(qm, lora_name, lora_strength)[0]
@@ -472,6 +486,7 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         })
         optional.update({"qwen_thinking": (list(prompter.THINKING), {"default": "off", "tooltip": "Thinking for the Qwen image-edit prompt enhancer. Independent of minimax_thinking; different modes use separate llama.cpp requests. Model/server support is required."})})
         optional.update({"minimax_thinking": (list(prompter.THINKING), {"default": "off", "tooltip": "Thinking for the llama.cpp prompt enhancer: off, low, medium, xhigh. Actual support depends on the selected model and server. Higher thinking can use more time and max_tokens; does not change diffusion steps."})})
+        optional.update({"keep_models_loaded": ("BOOLEAN", {"default": False, "tooltip": "Skip forced ComfyUI model unloading before the LLM enhancer and retain Qwen loaders across runs. Uses more memory; ComfyUI may still offload as needed. Leave room for llama.cpp, which has separate GPU memory management."})})
         return {"required": required, "optional": optional}
 
     def generate(self, source_video, fun_controlnet, qwen_model,
@@ -521,7 +536,8 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         timer.mark("enhancer")
         qwen_image = self._cached_qwen_edit(source, reference, qwen_prompt, kw["seed"],
             qwen_model, qwen_text_encoder, qwen_vae, qwen_lora_name, qwen_lora_strength,
-            qwen_steps, qwen_resolution, reuse_preprocessing)
+            qwen_steps, qwen_resolution, reuse_preprocessing,
+            keep_models_loaded=kw.get("keep_models_loaded", False))
         timer.mark("qwen_edit")
         control_frames = pose_control.extract_pose(source, pose_resolution) if pose_only else source
         timer.mark("pose_extraction")

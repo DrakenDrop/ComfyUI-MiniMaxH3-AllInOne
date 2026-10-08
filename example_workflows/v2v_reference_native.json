@@ -224,7 +224,8 @@
         "rgb source (legacy)",
         512,
         "off",
-        "off"
+        "off",
+        false
       ],
       "widgets_values_named": {
         "h3_model": "UnZipMeMultiModal.safetensors",
@@ -266,7 +267,8 @@
         "motion_control": "rgb source (legacy)",
         "pose_resolution": 512,
         "qwen_thinking": "off",
-        "minimax_thinking": "off"
+        "minimax_thinking": "off",
+        "keep_models_loaded": false
       }
     },
     {
