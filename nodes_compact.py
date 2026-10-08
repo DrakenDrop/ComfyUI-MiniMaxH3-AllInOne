@@ -473,7 +473,7 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         optional["ref_image_size"] = (["match", "max"], {"default": "max"})
         optional.update({
             "start_seconds": ("FLOAT", {"default": 0.0, "min": 0, "max": 3600}),
-            "max_seconds": ("FLOAT", {"default": 15.08, "min": 0.21, "max": 15.08}),
+            "max_seconds": ("FLOAT", {"default": 15.08, "min": 0.21, "max": 15.08, "tooltip": "Duration target, rounded with the official H3 formula at 24 FPS (10s -> 243 frames). Reads extra source frames for alignment when available; otherwise repeats the last frame."}),
             "control_strength": ("FLOAT", {"default": 1.0, "min": 0, "max": 3, "step": 0.05}),
             "qwen_steps": ("INT", {"default": 25, "min": 1, "max": 100}),
             "qwen_resolution": ("INT", {"default": 1024, "min": 512, "max": 2048, "step": 32}),
@@ -515,6 +515,10 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         # IMAGE batches carry no timing metadata. Match native H3 ref_video's 24 FPS contract.
         fps = 24.0
         frames, indices = geometry.video_timeline(len(original), fps, start_seconds, max_seconds)
+        tail_padding = max(0, sum(i == len(original) - 1 for i in indices) - 1)
+        lc.log(f"V2V timeline: requested={max_seconds:g}s; start={start_seconds:g}s; "
+               f"aligned={frames} frames ({frames / fps:.3f}s at 24 FPS); "
+               f"repeated_tail_frames={tail_padding}")
         w, h = geometry.canvas(kw["resolution"], kw["aspect_ratio"], original.shape[2], original.shape[1], kw["custom_aspect"])
         source = v2v.resize_frames(perf.take_frames(original, indices), w, h)
 

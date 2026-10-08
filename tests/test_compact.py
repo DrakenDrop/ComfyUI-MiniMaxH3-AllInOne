@@ -42,23 +42,43 @@ class CanvasTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 geometry.canvas("480p", "custom", 1, 1, ratio)
 
-    def test_timeline_preserves_time_and_never_pads(self):
-        for fps, count in ((24, 120), (30, 150), (60, 300), (23.976, 240)):
-            n, indices = geometry.video_timeline(count, fps)
-            self.assertEqual(n % 17, 5)
-            self.assertLessEqual(n / 24, count / fps)
-            self.assertEqual(indices[0], 0)
+    def test_timeline_uses_official_alignment_without_retiming(self):
+        for fps in (24, 30, 60, 23.976):
+            n, indices = geometry.video_timeline(1000, fps, 2, 10)
+            self.assertEqual(n, 243)
             for j, index in enumerate(indices):
-                self.assertLessEqual(abs(index / fps - j / 24), 1 / fps + 1e-7)
+                self.assertLessEqual(abs(index / fps - (2 + j / 24)), 1 / fps + 1e-7)
         n, idx = geometry.video_timeline(900, 30, 2, 5)
-        self.assertEqual(n, 107)
+        self.assertEqual(n, 124)
         self.assertEqual(idx[0], 60)
-        self.assertLess(idx[-1], 210)
-        self.assertEqual(geometry.generation_frames(5), 124)
-        with self.assertRaises(ValueError):
-            geometry.video_timeline(3, 24)
-        with self.assertRaises(ValueError):
-            geometry.video_timeline(20, float("nan"))
+        self.assertEqual(idx[-1], 213)
+
+    def test_timeline_repeats_only_missing_tail_frames(self):
+        n, idx = geometry.video_timeline(240, 24, 0, 10)
+        self.assertEqual(n, 243)
+        self.assertEqual(idx[:240], list(range(240)))
+        self.assertEqual(idx[240:], [239] * 3)
+        n, idx = geometry.video_timeline(120, 24, 0, 10)
+        self.assertEqual(n, 124)  # source shorter than requested: no long freeze
+        self.assertEqual(idx[:120], list(range(120)))
+        self.assertEqual(idx[120:], [119] * 4)
+        n, idx = geometry.video_timeline(288, 24, 2, 10)
+        self.assertEqual(idx[:240], list(range(48, 288)))
+        self.assertEqual(idx[240:], [287] * 3)
+
+    def test_official_duration_rounding_at_boundaries(self):
+        for seconds, expected in ((5, 124), (10, 243), (15, 362),
+                                  (22 / 24, 22), (22.4 / 24, 22), (22.6 / 24, 39)):
+            self.assertEqual(geometry.generation_frames(seconds), expected)
+            self.assertEqual(geometry.video_timeline(1000, 24, 0, seconds)[0], expected)
+        self.assertEqual(geometry.video_timeline(10000, 24, 0, 60)[0], 362)
+
+    def test_timeline_rejects_invalid_segments(self):
+        for count, fps, start, seconds in ((3, 24, 0, 10), (20, float("nan"), 0, 10),
+                                           (240, 24, 10, 5), (240, 24, -1, 5),
+                                           (240, 24, 0, 0)):
+            with self.assertRaises(ValueError):
+                geometry.video_timeline(count, fps, start, seconds)
 
 
 class PromptTests(unittest.TestCase):

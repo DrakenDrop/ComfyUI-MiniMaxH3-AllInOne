@@ -28,8 +28,14 @@ def canvas(resolution, aspect_ratio, reference_width, reference_height, custom_a
     return max(32, round(nw / 32) * 32), max(32, round(nh / 32) * 32)
 
 
-def video_timeline(frame_count, fps, start_seconds=0.0, max_seconds=15.1):
-    """Snap DOWN: never invent/hold frames to claim an exact motion match."""
+def _aligned_frames(seconds):
+    """Official duration expression, within this node's 362-frame limit."""
+    base = max(5, round(seconds * 24))
+    return min(362, base + (5 - (base % 17)) % 17)
+
+
+def video_timeline(frame_count, fps, start_seconds=0.0, max_seconds=15.08):
+    """Align up like the official workflow; repeat the tail only if source ends."""
     if frame_count < 1 or not math.isfinite(fps) or fps <= 0:
         raise ValueError("Source video must contain frames and a positive finite FPS")
     if not math.isfinite(start_seconds) or start_seconds < 0:
@@ -37,15 +43,15 @@ def video_timeline(frame_count, fps, start_seconds=0.0, max_seconds=15.1):
     if not math.isfinite(max_seconds) or max_seconds <= 0:
         raise ValueError("max_seconds must be finite and positive")
     available = frame_count / fps - start_seconds
-    n = min(362, math.floor(min(available, max_seconds) * 24 + 1e-6))
-    if n < 5:
+    duration = min(available, max_seconds)
+    if math.floor(duration * 24 + 1e-6) < 5:
         raise ValueError("Selected source segment needs at least 5 frames at 24 FPS")
-    n = 5 + 17 * ((n - 5) // 17)
-    indices = [min(frame_count - 1, int((start_seconds + j / 24) * fps)) for j in range(n)]
+    n = _aligned_frames(duration)
+    indices = [min(frame_count - 1, math.floor(start_seconds * fps + j * fps / 24 + 1e-7)) for j in range(n)]
     return n, indices
 
 
 def generation_frames(seconds):
     if not math.isfinite(seconds) or not 5 / 24 <= seconds <= 362 / 24:
         raise ValueError("H3 duration must be between 0.21 and 15.08 seconds")
-    return min(362, 5 + 17 * math.ceil((seconds * 24 - 5) / 17))
+    return _aligned_frames(seconds)

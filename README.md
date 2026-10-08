@@ -224,6 +224,12 @@ Presets: 360p, 480p, native 768p. All canvases use multiples of 32. `360p` means
 
 Also available: 1:1, 4:3, 3:4, 3:2, 2:3, 21:9, same as reference, custom. Set custom as `width:height`, e.g. `5:4`. Changing aspect ratio crops the source/reference and affects framing.
 
+### Duration and frame alignment
+
+R2V and V2V use the official duration expression at 24 FPS: `max(5, round(seconds * 24)) + (5 - (max(5, round(seconds * 24)) % 17)) % 17`, capped at this node's 362-frame limit. V2V no longer rounds down. Examples: 5s gives 124 frames (5.167s), 10s gives 243 frames (10.125s), and 15s gives 362 frames (15.083s). `max_seconds` is therefore a duration target, not a strict output cutoff.
+
+V2V starts at `start_seconds` and takes the aligned number of source frames without stretching time. Extra source frames are used when available. If alignment extends beyond the supplied IMAGE batch, only the missing tail is filled by repeating the final source frame; the log reports `repeated_tail_frames`. If the source segment is shorter than requested, its available duration is aligned instead of freezing the rest of the requested clip. Input remains a 24 FPS IMAGE batch. Limit frames in the upstream video loader separately if you want to avoid loading the full video.
+
 ### Keep models loaded between runs
 
 Set `keep_models_loaded=true` on the all-in-one node to skip its explicit `unload_all_models()` before an enhancer cache miss. V2V also retains its Qwen model, encoder, and VAE loader objects across edits, reusing unchanged weights even when the seed or prompt changes. Changed model paths or file metadata replace the corresponding cached object. H3/FunControlNet loader objects already persist within the node. Qwen LoRA patches are still applied for each new edit.
@@ -295,7 +301,7 @@ Keep the working model, scheduler, steps and resolution for the first timing com
 
 API signatures and model filenames were checked against current official ComfyUI and Qwen sources. Workflow graph consistency is checked by `tools/check_workflows.cjs`. Unit tests cover canvas sizing, temporal sampling, first-frame prompt policy, audio-tag rejection and the zero-audio-token wrapper contract: `python -m unittest discover -s tests -v`.
 
-Python syntax checks, all 50 unit tests (including discovery, prompt-format regressions, and native/strict V2V routing), and the workflow graph checks pass. End-to-end generation has **not** been run because no ComfyUI GPU runtime is available here. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
+Python syntax checks, all 53 unit tests (including discovery, prompt-format regressions, and native/strict V2V routing), and the workflow graph checks pass. End-to-end generation has **not** been run because no ComfyUI GPU runtime is available here. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
 
 The example workflows were built using public official templates as integration references. They have not been validated through end-to-end generation.
 
