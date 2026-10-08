@@ -181,7 +181,7 @@ The V2V `ref_image` input is optional. Leave it disconnected for a text-directed
 
 V2V exposes one `instruction` field. For example: **"Change her clothes to this"**, with the target outfit connected to `ref_image`.
 
-Before diffusion sampling, the selected vision GGUF reads the source first frame, the reference image and sampled source-motion frames through llama.cpp. A single enhancement response supplies two prompts; official MiniMax sections are normalized into text:
+Before diffusion sampling, the selected vision GGUF reads the source first frame, the reference image and sampled source-motion frames through llama.cpp. The enhancer supplies two coordinated prompts; official MiniMax sections are normalized into text:
 
 - `qwen_prompt`: an editing directive using `<image1>` for the source first frame and `<image2>` only when an optional reference is connected.
 - `minimax_prompt`: the six-section H3 video-editing prompt, preserving source performance and using the intended Qwen edit as an appearance reference, without a frame guide.
@@ -224,6 +224,14 @@ Presets: 360p, 480p, native 768p. All canvases use multiples of 32. `360p` means
 
 Also available: 1:1, 4:3, 3:4, 3:2, 2:3, 21:9, same as reference, custom. Set custom as `width:height`, e.g. `5:4`. Changing aspect ratio crops the source/reference and affects framing.
 
+### Separate enhancer thinking controls
+
+V2V exposes `qwen_thinking` for the Qwen image-edit prompt and `minimax_thinking` for the H3 video prompt. Each offers `off`, `low`, `medium`, and `xhigh`, defaulting to `off`. R2V exposes only `minimax_thinking`. These control the llama.cpp prompt enhancer, not Qwen/H3 diffusion sampling. Both use the selected `llm_model` and `mmproj`.
+
+When the modes match, a shared request generates both prompts. When they differ, Qwen prompting runs first with its own mode; MiniMax prompting then uses its mode and the accepted Qwen prompt as context. MiniMax validation retries always use `minimax_thinking` and preserve the accepted Qwen text. Both settings are included in the enhancer cache key and printed in the V2V log.
+
+Thinking support and effort levels depend on the selected model and llama.cpp chat template. Higher settings can increase time and consume the output budget; the existing backend may retry without thinking if it produces no final answer. These controls do not guarantee better video quality or pose preservation.
+
 ### MiniMax enhancement style
 
 Both all-in-one nodes provide `minimax_prompt_style`:
@@ -235,7 +243,7 @@ V2V still enhances one user instruction into a Qwen edit prompt and a MiniMax pr
 
 In official V2V mode, the enhancer is asked for a structured object with six fields; the node formats it into the H3 text prompt. Complete text responses, Markdown headings, JSON section objects, and reordered sections are normalized. Missing, duplicate or empty sections produce an explicit error. Simple mode does not run the six-section validator.
 
-`max_tokens` is an output budget shared by both prompts, not a guarantee of correct formatting. An 8192-token budget can still produce invalid headings; increase it only when the response is actually truncated. Errors now identify missing sections instead of assuming a token shortage.
+`max_tokens` is the output budget per request, not a guarantee of correct formatting. Matching thinking modes share that budget across both prompts; different modes give each prompt its own request budget. An 8192-token budget can still produce invalid headings; increase it only when the response is actually truncated. Errors now identify missing sections instead of assuming a token shortage.
 
 ### Automatic llama-server discovery
 
@@ -279,7 +287,7 @@ Keep the working model, scheduler, steps and resolution for the first timing com
 
 API signatures and model filenames were checked against current official ComfyUI and Qwen sources. Workflow graph consistency is checked by `tools/check_workflows.cjs`. Unit tests cover canvas sizing, temporal sampling, first-frame prompt policy, audio-tag rejection and the zero-audio-token wrapper contract: `python -m unittest discover -s tests -v`.
 
-Python syntax checks, all 42 unit tests (including discovery, prompt-format regressions, and native/strict V2V routing), and the workflow graph checks pass. End-to-end generation has **not** been run because no ComfyUI GPU runtime is available here. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
+Python syntax checks, all 48 unit tests (including discovery, prompt-format regressions, and native/strict V2V routing), and the workflow graph checks pass. End-to-end generation has **not** been run because no ComfyUI GPU runtime is available here. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
 
 The example workflows were built using public official templates as integration references. They have not been validated through end-to-end generation.
 

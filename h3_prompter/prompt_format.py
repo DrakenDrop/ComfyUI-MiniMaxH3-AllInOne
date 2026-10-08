@@ -98,14 +98,7 @@ def _normalize_h3_labels(text):
                   lambda m: f"<{m[1].title()} {int(m[2])}>", text, flags=re.I)
 
 
-def parse_edit_response(content, style="official", has_reference=True, has_video_reference=True):
-    try:
-        result = json.loads(strip_fence(content))
-    except (TypeError, AttributeError, json.JSONDecodeError) as exc:
-        raise ValueError("Enhancer did not return complete JSON. Check its response/log for truncation or formatting errors.") from exc
-    if not isinstance(result, dict) or set(result) != {"qwen_prompt", "minimax_prompt"}:
-        raise ValueError("Enhancer must return qwen_prompt and minimax_prompt.")
-    qwen = result["qwen_prompt"]
+def validate_qwen_prompt(qwen, has_reference=True):
     if not isinstance(qwen, str) or not qwen.strip():
         raise ValueError("Qwen prompt must be non-empty text.")
     required = ("<image1>", "<image2>") if has_reference else ("<image1>",)
@@ -114,6 +107,28 @@ def parse_edit_response(content, style="official", has_reference=True, has_video
     allowed = {"1", "2"} if has_reference else {"1"}
     if any(label not in allowed for label in re.findall(r"<image\s*(\d+)>", qwen, re.I)):
         raise ValueError("Qwen prompt references an image that is not connected.")
+    return qwen.strip()
+
+
+def parse_prompt_field(content, field):
+    """Read a single-stage enhancer response without accepting extra prompt fields."""
+    try:
+        result = json.loads(strip_fence(content))
+    except (TypeError, AttributeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{field} enhancer did not return complete JSON; check max_tokens and formatting.") from exc
+    if not isinstance(result, dict) or set(result) != {field}:
+        raise ValueError(f"Enhancer must return exactly one field: {field}.")
+    return result[field]
+
+
+def parse_edit_response(content, style="official", has_reference=True, has_video_reference=True):
+    try:
+        result = json.loads(strip_fence(content))
+    except (TypeError, AttributeError, json.JSONDecodeError) as exc:
+        raise ValueError("Enhancer did not return complete JSON. Check its response/log for truncation or formatting errors.") from exc
+    if not isinstance(result, dict) or set(result) != {"qwen_prompt", "minimax_prompt"}:
+        raise ValueError("Enhancer must return qwen_prompt and minimax_prompt.")
+    qwen = validate_qwen_prompt(result["qwen_prompt"], has_reference)
     try:
         minimax = apply_policy(result["minimax_prompt"], silent=True, style=style)
     except ValueError as exc:

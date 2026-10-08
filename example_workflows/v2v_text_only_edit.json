@@ -180,7 +180,9 @@
         "strict video-only (experimental)",
         true,
         "rgb source (legacy)",
-        512
+        512,
+        "off",
+        "off"
       ],
       "widgets_values_named": {
         "h3_model": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
@@ -220,7 +222,9 @@
         "h3_sampling_mode": "strict video-only (experimental)",
         "reuse_preprocessing": true,
         "motion_control": "rgb source (legacy)",
-        "pose_resolution": 512
+        "pose_resolution": 512,
+        "qwen_thinking": "off",
+        "minimax_thinking": "off"
       }
     },
     {

@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import os
+import json
 from . import nodes as prompter
 from .h3_prompter import canvas as geometry, local_models, managed_server, v2v, performance as perf, pose_control
 from .h3_prompter.video_only import patch_video_only, VideoOnlyNoise
-from .h3_prompter.prompt_format import apply_policy, parse_edit_response_with_repair
+from .h3_prompter.prompt_format import apply_policy, parse_edit_response_with_repair, parse_prompt_field, validate_qwen_prompt
 
 CFG = prompter._CFG
 CATEGORY = "MiniMax H3/All in One"
@@ -91,7 +92,9 @@ class _Pipeline:
     def _prompt(self, *, ref_image, frames, instruction, llm_model, mmproj, seed,
                 video=None, first_frame=None, audio=None, additional_system_prompt="",
                 prompt_override="", max_tokens=3072, context_size=32768,
-                server_url="http://127.0.0.1:8080", unload_llm_after_prompt=True, minimax_prompt_style="official", **unused):
+                server_url="http://127.0.0.1:8080", unload_llm_after_prompt=True, minimax_prompt_style="official", minimax_thinking="off", **unused):
+        if minimax_thinking not in prompter.THINKING:
+            raise ValueError(f"Unknown minimax_thinking: {minimax_thinking}")
         if prompt_override.strip():
             prompt = prompt_override.strip()
         else:
@@ -116,7 +119,7 @@ class _Pipeline:
                 prompt = prompter.MiniMaxH3R2VPrompter().generate(
                     instruction=instruction, task="video editing" if video is not None else "reference generation",
                     frame_anchor="reference 1 = first frame" if unused.get("ref_image_1_as_first_frame", False) else "none",
-                    duration_seconds=frames / 24, thinking="off", length="standard",
+                    duration_seconds=frames / 24, thinking=minimax_thinking, length="standard",
                     allow_invented_dialogue=False, max_tokens=max_tokens, seed=int(seed) % (2**32),
                     model=llm_model, mmproj=mmproj, frame_count=frames,
                     additional_system_prompt=additional_system_prompt, extra_rules=rules,
@@ -169,7 +172,9 @@ class MiniMaxH3R2VGenerate(_Pipeline):
             "ref_image_1_as_first_frame": ("BOOLEAN", {"default": False, "label_on": "Yes", "label_off": "No",
                 "tooltip": "Yes: declare Picture 1 as first frame in the prompt and anchor it at frame 0"}),
         })
-        return {"required": required, "optional": extra_inputs()}
+        optional = extra_inputs()
+        optional.update({"minimax_thinking": (list(prompter.THINKING), {"default": "off", "tooltip": "Thinking for the llama.cpp prompt enhancer: off, low, medium, xhigh. Actual support depends on the selected model and server. Higher thinking can use more time and max_tokens; does not change diffusion steps."})})
+        return {"required": required, "optional": optional}
 
     def generate(self, ref_image, ref_audio, h3_audio_vae, duration_seconds, audio_mode,
                  ref_image_1_as_first_frame=False, **kw):
@@ -212,7 +217,7 @@ class MiniMaxH3V2VGenerate(_Pipeline):
 
 
     def _enhance_edit(self, source, reference, instruction, frames, **kw):
-        """One user instruction -> one vision enhancement response containing both prompts."""
+        """Coordinate Qwen and MiniMax prompts with independent thinking settings."""
         import comfy.model_management
         from .h3_prompter import media, llama_client as lc, prompts
 
@@ -223,6 +228,12 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         server_url = (kw.get("server_url") or CFG["server_url"]).strip()
         alias = os.path.splitext(os.path.basename(model_path))[0] if model_path else CFG.get("model_alias", "qwen3.8-27b")
 
+        qwen_thinking = kw.get("qwen_thinking", "off")
+        minimax_thinking = kw.get("minimax_thinking", "off")
+        for name, mode in (("qwen_thinking", qwen_thinking), ("minimax_thinking", minimax_thinking)):
+            if mode not in prompter.THINKING:
+                raise ValueError(f"Unknown {name}: {mode}")
+        lc.log(f"V2V enhancer: qwen_thinking={qwen_thinking}, minimax_thinking={minimax_thinking}")
         style = kw.get("minimax_prompt_style", "official")
         if style not in ("official", "simple"):
             raise ValueError(f"Unknown MiniMax prompt style: {style}")
@@ -322,7 +333,7 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         reuse = kw.get("reuse_preprocessing", True) and model_path is not None
         key = None
         if reuse:
-            key = perf.request_key(system, parts, base, kw.get("context_size", 32768), CFG,
+            key = perf.request_key(system, parts, base, qwen_thinking, minimax_thinking, kw.get("context_size", 32768), CFG,
                                    perf.file_stamp(model_path), perf.file_stamp(mmproj_path))
             cached = cache.get(key)
             if cached is not None:
@@ -339,14 +350,37 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         else:
             lc.ensure_server(server_url, CFG)
 
-        def request(request_parts):
+        def request(request_parts, thinking, request_system=system):
             return prompter.MiniMaxH3R2VPrompter._run(
-                server_url, base, {"role": "system", "content": system},
-                {"role": "user", "content": request_parts}, "off",
+                server_url, base, {"role": "system", "content": request_system},
+                {"role": "user", "content": request_parts}, thinking,
                 float(CFG.get("request_timeout_seconds", 600)), False, None, prefill=None)[0]
 
         try:
-            content = request(parts)
+            if qwen_thinking == minimax_thinking:
+                content = request(parts, qwen_thinking)
+            else:
+                # Separate calls are necessary: thinking is a per-request setting.
+                qwen_system, h3_system = system.split("For minimax_prompt", 1)
+                qwen_system = qwen_system.replace(
+                    "Return a JSON object with exactly two fields: qwen_prompt and minimax_prompt. ",
+                    "Return a JSON object with exactly one string field: qwen_prompt. ")
+                qwen_system += "\n" + qwen_labels + "No Markdown fences."
+                if extra:
+                    qwen_system += "\nAdditional user preferences:\n" + extra
+                qwen = validate_qwen_prompt(parse_prompt_field(
+                    request(parts, qwen_thinking, qwen_system), "qwen_prompt"), has_reference)
+                h3_system = "For minimax_prompt" + h3_system.split("\n\nResponse envelope:", 1)[0]
+                h3_system += ("\nReturn JSON with exactly one field: minimax_prompt. " +
+                              ("Its value is an object with six non-empty string fields: " +
+                               ", ".join(prompts.R2V_FIELDS) +
+                               ". Set overall_soundscape and non_diegetic_music to N/A. "
+                               if style == "official" else "Its value is concise prose as a string. ") +
+                              "No Markdown fences. The accepted Qwen prompt is context only; "
+                              "translate its image roles into the H3 asset roles above.")
+                minimax_value = parse_prompt_field(request(parts + [{"type": "text", "text":
+                    "Accepted Qwen image edit prompt:\n" + qwen}], minimax_thinking, h3_system), "minimax_prompt")
+                content = json.dumps({"qwen_prompt": qwen, "minimax_prompt": minimax_value})
 
             def repair(reason):
                 lc.log(f"V2V enhancer validation: {reason} Repairing MiniMax prompt once.")
@@ -354,7 +388,7 @@ class MiniMaxH3V2VGenerate(_Pipeline):
                     "Correct only minimax_prompt in the previous response. " + reason +
                     " Preserve qwen_prompt exactly. " + h3_assets +
                     "Do not add other assets or frame anchors. Return the complete JSON envelope. "
-                    "Previous response:\n" + content}])
+                    "Previous response:\n" + content}], minimax_thinking)
 
             qwen, minimax = parse_edit_response_with_repair(content, style, repair, has_reference=has_reference,
                                                           has_video_reference=has_video_reference)
@@ -436,6 +470,8 @@ class MiniMaxH3V2VGenerate(_Pipeline):
             "motion_control": (["pose only (DWPose)", "rgb source (legacy)"], {"default": "pose only (DWPose)", "tooltip": "Pose only extracts skeletons internally and sends only the Qwen image to H3; no masks or RGB video references. Requires comfyui_controlnet_aux. Legacy retains the previous RGB control/reference path."}),
             "pose_resolution": ("INT", {"default": 512, "min": 256, "max": 1024, "step": 64, "tooltip": "DWPose detection resolution; only used in pose-only mode."}),
         })
+        optional.update({"qwen_thinking": (list(prompter.THINKING), {"default": "off", "tooltip": "Thinking for the Qwen image-edit prompt enhancer. Independent of minimax_thinking; different modes use separate llama.cpp requests. Model/server support is required."})})
+        optional.update({"minimax_thinking": (list(prompter.THINKING), {"default": "off", "tooltip": "Thinking for the llama.cpp prompt enhancer: off, low, medium, xhigh. Actual support depends on the selected model and server. Higher thinking can use more time and max_tokens; does not change diffusion steps."})})
         return {"required": required, "optional": optional}
 
     def generate(self, source_video, fun_controlnet, qwen_model,

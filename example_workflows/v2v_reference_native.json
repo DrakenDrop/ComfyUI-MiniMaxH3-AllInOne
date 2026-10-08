@@ -222,7 +222,9 @@
         "native AV (discard audio)",
         true,
         "rgb source (legacy)",
-        512
+        512,
+        "off",
+        "off"
       ],
       "widgets_values_named": {
         "h3_model": "UnZipMeMultiModal.safetensors",
@@ -262,7 +264,9 @@
         "h3_sampling_mode": "native AV (discard audio)",
         "reuse_preprocessing": true,
         "motion_control": "rgb source (legacy)",
-        "pose_resolution": 512
+        "pose_resolution": 512,
+        "qwen_thinking": "off",
+        "minimax_thinking": "off"
       }
     },
     {

@@ -62,6 +62,7 @@ class V2VRoutingTests(unittest.TestCase):
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "MiniMaxH3V2VGenerate")
         namespace = dict(__name__="routing_pkg.nodes_compact", __package__="routing_pkg",
                          _Pipeline=Pipeline, CATEGORY="test", NONE="(none)", perf=perf, pose_control=pose,
+                         prompter=types.SimpleNamespace(THINKING=["off", "low", "medium", "xhigh"]),
                          common_inputs=lambda: {}, extra_inputs=lambda: {}, choices=lambda *a, **kw: [],
                          args=lambda output: output, patch_video_only=wrapper,
                          geometry=types.SimpleNamespace(

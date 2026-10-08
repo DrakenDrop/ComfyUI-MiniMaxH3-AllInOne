@@ -72,10 +72,11 @@ class PreprocessingTests(unittest.TestCase):
         tree = ast.parse((ROOT / "nodes_compact.py").read_text())
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "MiniMaxH3V2VGenerate")
         namespace = dict(__name__="speed_pkg.nodes_compact", __package__="speed_pkg",
-                         _Pipeline=Pipeline, CATEGORY="test", NONE="(none)", os=os, perf=perf,
+                         _Pipeline=Pipeline, CATEGORY="test", NONE="(none)", os=os, json=json, perf=perf,
+                         parse_prompt_field=fmt.parse_prompt_field, validate_qwen_prompt=fmt.validate_qwen_prompt,
                          CFG={"server_url": "http://local"}, local_models=types.SimpleNamespace(resolve=self.resolve),
                          managed_server=self.server, parse_edit_response_with_repair=fmt.parse_edit_response_with_repair,
-                         prompter=types.SimpleNamespace(MiniMaxH3R2VPrompter=types.SimpleNamespace(_run=self.request)))
+                         prompter=types.SimpleNamespace(THINKING=["off", "low", "medium", "xhigh"], MiniMaxH3R2VPrompter=types.SimpleNamespace(_run=self.request)))
         exec(compile(ast.Module(body=[cls], type_ignores=[]), "nodes_compact.py", "exec"), namespace)
         self.node = namespace["MiniMaxH3V2VGenerate"]()
 
@@ -256,6 +257,88 @@ class PreprocessingTests(unittest.TestCase):
                         has_reference=has_reference, has_video_reference=False)
                     self.assertEqual(repaired, qwen)
                     self.assertNotIn("<Video", result)
+
+    def test_thinking_modes_reach_backend_and_invalidate_enhancer_cache(self):
+        for mode in ("off", "low", "medium", "xhigh"):
+            before = self.request.call_count
+            self.enhance(qwen_thinking=mode, minimax_thinking=mode)
+            self.assertEqual(self.request.call_args.args[4], mode)
+            self.assertEqual(self.request.call_count, before + 1)
+            self.enhance(qwen_thinking=mode, minimax_thinking=mode)
+            self.assertEqual(self.request.call_count, before + 1)
+        for field in ("qwen_thinking", "minimax_thinking"):
+            with self.assertRaisesRegex(ValueError, field):
+                self.enhance(**{field: "invalid"})
+
+    def test_separate_thinking_requests_context_and_cache(self):
+        qwen = "Edit <image1> using <image2>."
+        def respond(*args, **kwargs):
+            system = args[2]["content"]
+            field = "qwen_prompt" if "exactly one string field: qwen_prompt" in system else "minimax_prompt"
+            value = qwen if field == "qwen_prompt" else "Edit <Video 1> with the outfit from <Picture 1>."
+            return json.dumps({field: value}), None, None
+        self.request.side_effect = respond
+        for qm, hm in (("low", "off"), ("medium", "off"), ("medium", "xhigh")):
+            before = self.request.call_count
+            result = self.enhance(qwen_thinking=qm, minimax_thinking=hm)
+            self.assertEqual(result[0], qwen)
+            calls = self.request.call_args_list[-2:]
+            self.assertEqual([c.args[4] for c in calls], [qm, hm])
+            self.assertIn(qwen, calls[1].args[3]["content"][-1]["text"])
+            self.assertNotIn("exactly two fields", calls[0].args[2]["content"])
+            self.assertNotIn("JSON with two strings", calls[1].args[2]["content"])
+            self.assertEqual(self.enhance(qwen_thinking=qm, minimax_thinking=hm), result)
+            self.assertEqual(self.request.call_count, before + 2)
+
+    def test_separate_thinking_repair_keeps_qwen_and_minimax_mode(self):
+        qwen = "Edit <image1> using <image2>."
+        self.request.side_effect = [
+            (json.dumps({"qwen_prompt": qwen}), None, None),
+            (json.dumps({"minimax_prompt": "Edit the video."}), None, None),
+            (json.dumps({"qwen_prompt": "unexpected replacement", "minimax_prompt":
+                         "Edit <Video 1> with the outfit from <Picture 1>."}), None, None),
+        ]
+        result = self.enhance(qwen_thinking="low", minimax_thinking="xhigh")
+        self.assertEqual(result[0], qwen)
+        self.assertEqual([c.args[4] for c in self.request.call_args_list], ["low", "xhigh", "xhigh"])
+
+    def test_separate_thinking_invalid_qwen_stops_before_minimax(self):
+        self.request.return_value = (json.dumps({"qwen_prompt": "Edit missing images"}), None, None)
+        with self.assertRaisesRegex(ValueError, "Qwen prompt must reference"):
+            self.enhance(qwen_thinking="low", minimax_thinking="off")
+        self.assertEqual(self.request.call_count, 1)
+        self.server.stop.assert_called_once()
+
+    def test_separate_thinking_official_without_optional_reference(self):
+        qwen = "Edit <image1>: make the dress red."
+        mini = dict(zip(fmt.FIELDS, ("<Video 1> is source. <Picture 1> is edited appearance.",
+                    "[video editing] Change clothing.", "Preserve motion.",
+                    "Edit <Video 1> using <Picture 1>.", "N/A", "N/A")))
+        self.request.side_effect = [(json.dumps({"qwen_prompt": qwen}), None, None),
+                                    (json.dumps({"minimax_prompt": mini}), None, None)]
+        result = self.enhance(reference=None, minimax_prompt_style="official",
+                              qwen_thinking="off", minimax_thinking="medium",
+                              additional_system_prompt="Keep the background intact.")
+        self.assertEqual(result[0], qwen)
+        self.assertIn("subject_definitions:", result[1])
+        for call in self.request.call_args_list:
+            self.assertIn("Keep the background intact.", call.args[2]["content"])
+        self.assertIn("six non-empty string fields", self.request.call_args.args[2]["content"])
+
+    def test_r2v_thinking_reaches_prompt_generator(self):
+        generator = Mock(return_value=("Reference image scene.",))
+        backend = types.SimpleNamespace(THINKING=["off", "low", "medium", "xhigh"],
+                    MiniMaxH3R2VPrompter=lambda: types.SimpleNamespace(generate=generator))
+        tree = ast.parse((ROOT / "nodes_compact.py").read_text())
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "_Pipeline")
+        ns = dict(NONE="(none)", prompter=backend, local_models=types.SimpleNamespace(SERVER_DEFAULT="server"),
+                  managed_server=self.server, CFG={}, apply_policy=fmt.apply_policy)
+        exec(compile(ast.Module(body=[cls], type_ignores=[]), "nodes_compact.py", "exec"), ns)
+        node = ns["_Pipeline"]()
+        for mode in backend.THINKING:
+            node._prompt(ref_image=self.reference, frames=5, instruction="scene", llm_model="llm",
+                         mmproj="auto", seed=1, minimax_prompt_style="simple", minimax_thinking=mode)
+            self.assertEqual(generator.call_args.kwargs["thinking"], mode)
 
     def test_split_gguf_stamp_tracks_all_shards(self):
         first = self.root / "model-00001-of-00002.gguf"
