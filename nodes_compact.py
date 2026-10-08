@@ -6,7 +6,7 @@ import json
 from . import nodes as prompter
 from .h3_prompter import canvas as geometry, local_models, managed_server, v2v, performance as perf, pose_control
 from .h3_prompter.video_only import patch_video_only, VideoOnlyNoise
-from .h3_prompter.prompt_format import apply_policy, parse_edit_response_with_repair, parse_prompt_field, validate_qwen_prompt
+from .h3_prompter.prompt_format import apply_policy, parse_edit_response_unchecked, prompt_field_unchecked
 
 CFG = prompter._CFG
 CATEGORY = "MiniMax H3/All in One"
@@ -335,7 +335,7 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         reuse = kw.get("reuse_preprocessing", True) and model_path is not None
         key = None
         if reuse:
-            key = perf.request_key(system, parts, base, qwen_thinking, minimax_thinking, kw.get("context_size", 32768), CFG,
+            key = perf.request_key("unchecked-prompts-v1", system, parts, base, qwen_thinking, minimax_thinking, kw.get("context_size", 32768), CFG,
                                    perf.file_stamp(model_path), perf.file_stamp(mmproj_path))
             cached = cache.get(key)
             if cached is not None:
@@ -374,8 +374,8 @@ class MiniMaxH3V2VGenerate(_Pipeline):
                 qwen_system += "\n" + qwen_labels + "No Markdown fences."
                 if extra:
                     qwen_system += "\nAdditional user preferences:\n" + extra
-                qwen = validate_qwen_prompt(parse_prompt_field(
-                    request(parts, qwen_thinking, qwen_system), "qwen_prompt"), has_reference)
+                qwen = prompt_field_unchecked(
+                    request(parts, qwen_thinking, qwen_system), "qwen_prompt")
                 h3_system = "For minimax_prompt" + h3_system.split("\n\nResponse envelope:", 1)[0]
                 h3_system += ("\nReturn JSON with exactly one field: minimax_prompt. " +
                               ("Its value is an object with six non-empty string fields: " +
@@ -384,27 +384,19 @@ class MiniMaxH3V2VGenerate(_Pipeline):
                                if style == "official" else "Its value is concise prose as a string. ") +
                               "No Markdown fences. The accepted Qwen prompt is context only; "
                               "translate its image roles into the H3 asset roles above.")
-                minimax_value = parse_prompt_field(request(parts + [{"type": "text", "text":
+                minimax_value = prompt_field_unchecked(request(parts + [{"type": "text", "text":
                     "Accepted Qwen image edit prompt:\n" + qwen}], minimax_thinking, h3_system), "minimax_prompt")
                 content = json.dumps({"qwen_prompt": qwen, "minimax_prompt": minimax_value})
 
-            def repair(reason):
-                lc.log(f"V2V enhancer validation: {reason} Repairing MiniMax prompt once.")
-                return request(parts + [{"type": "text", "text":
-                    "Correct only minimax_prompt in the previous response. " + reason +
-                    " Preserve qwen_prompt exactly. " + h3_assets +
-                    "Do not add other assets or frame anchors. Return the complete JSON envelope. "
-                    "Previous response:\n" + content}], minimax_thinking)
-
-            qwen, minimax = parse_edit_response_with_repair(content, style, repair, has_reference=has_reference,
-                                                          has_video_reference=has_video_reference)
+            qwen, minimax = parse_edit_response_unchecked(content)
+            lc.log("V2V enhancer: using output directly; prompt validation and correction retries bypassed.")
         finally:
             if kw.get("unload_llm_after_prompt", True) and model_path:
                 managed_server.stop(CFG)
         if reuse:
-            cache.put(key, (qwen.strip(), minimax))
+            cache.put(key, (qwen, minimax))
         lc.log("One instruction enhanced into Qwen and MiniMax prompts.")
-        return qwen.strip(), minimax
+        return qwen, minimax
 
 
     def _cached_qwen_edit(self, source, reference, prompt, seed, model_name, encoder_name,

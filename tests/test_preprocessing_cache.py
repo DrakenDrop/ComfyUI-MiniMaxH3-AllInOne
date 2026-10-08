@@ -73,7 +73,8 @@ class PreprocessingTests(unittest.TestCase):
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "MiniMaxH3V2VGenerate")
         namespace = dict(__name__="speed_pkg.nodes_compact", __package__="speed_pkg",
                          _Pipeline=Pipeline, CATEGORY="test", NONE="(none)", os=os, json=json, perf=perf,
-                         parse_prompt_field=fmt.parse_prompt_field, validate_qwen_prompt=fmt.validate_qwen_prompt,
+                         prompt_field_unchecked=fmt.prompt_field_unchecked,
+                         parse_edit_response_unchecked=fmt.parse_edit_response_unchecked,
                          CFG={"server_url": "http://local"}, local_models=types.SimpleNamespace(resolve=self.resolve),
                          managed_server=self.server, parse_edit_response_with_repair=fmt.parse_edit_response_with_repair,
                          prompter=types.SimpleNamespace(THINKING=["off", "low", "medium", "xhigh"], MiniMaxH3R2VPrompter=types.SimpleNamespace(_run=self.request)))
@@ -209,20 +210,32 @@ class PreprocessingTests(unittest.TestCase):
                 self.assertEqual(repaired, qwen)
 
 
-    def test_missing_label_repair_happens_before_caching_and_server_stop(self):
-        bad = json.dumps({"qwen_prompt": "Edit <image1> using <image2>.",
-                          "minimax_prompt": "Change the dress in <Video 1> to red."})
-        good = json.dumps({"qwen_prompt": "Changed Qwen text must not replace the original.",
-                           "minimax_prompt": "Edit <Video 1> using the appearance in <Picture 1>."})
-        self.request.side_effect = [(bad, None, None), (good, None, None)]
-        qwen, minimax = self.enhance()
-        self.assertEqual(qwen, "Edit <image1> using <image2>.")
-        self.assertIn("<Picture 1>", minimax)
+    def test_unchecked_prompts_pass_through_and_cache_without_retry(self):
+        qwen_text = "  Any edit text without image tags.  "
+        minimax_text = "The shot begins from <Picture 1>. Follow <Video 9>. <Audio 1> Music."
+        self.request.return_value = (json.dumps({"qwen_prompt": qwen_text,
+                                                "minimax_prompt": minimax_text}), None, None)
+        for style in ("simple", "official"):
+            result = self.enhance(minimax_prompt_style=style)
+            self.assertEqual(result, (qwen_text, minimax_text))
+            before = self.request.call_count
+            self.assertEqual(self.enhance(minimax_prompt_style=style), result)
+            self.assertEqual(self.request.call_count, before)
         self.assertEqual(self.request.call_count, 2)
-        self.server.ensure.assert_called_once()
-        self.server.stop.assert_called_once()
-        self.assertEqual(self.enhance(), (qwen, minimax))
-        self.assertEqual(self.request.call_count, 2)
+
+    def test_incomplete_sections_and_extra_envelope_fields_are_accepted(self):
+        self.request.return_value = (json.dumps({"qwen_prompt": "raw edit", "minimax_prompt":
+            {"summary": "Start from <Picture 1>.", "extra": "Keep this too."}, "notes": "ignored envelope metadata"}), None, None)
+        result = self.enhance(minimax_prompt_style="official")
+        self.assertEqual(result, ("raw edit", "summary:\nStart from <Picture 1>.\n\nextra:\nKeep this too."))
+        self.assertEqual(self.request.call_count, 1)
+
+    def test_malformed_envelope_is_used_raw_without_retry(self):
+        for raw in ("Plain free-form output.", '{"minimax_prompt": "truncated', ""):
+            self.request.return_value = (raw, None, None)
+            before = self.request.call_count
+            self.assertEqual(self.enhance(reuse_preprocessing=False), (raw, raw))
+            self.assertEqual(self.request.call_count, before + 1)
 
 
     def test_pose_prompt_mode_uses_only_qwen_h3_image_and_invalidates_rgb_cache(self):
@@ -290,24 +303,24 @@ class PreprocessingTests(unittest.TestCase):
             self.assertEqual(self.enhance(qwen_thinking=qm, minimax_thinking=hm), result)
             self.assertEqual(self.request.call_count, before + 2)
 
-    def test_separate_thinking_repair_keeps_qwen_and_minimax_mode(self):
-        qwen = "Edit <image1> using <image2>."
+    def test_separate_thinking_bypasses_all_prompt_checks(self):
+        qwen = "Edit without any image tags."
+        minimax = "Use <Picture 2> as first frame; <Audio 3>."
         self.request.side_effect = [
             (json.dumps({"qwen_prompt": qwen}), None, None),
-            (json.dumps({"minimax_prompt": "Edit the video."}), None, None),
-            (json.dumps({"qwen_prompt": "unexpected replacement", "minimax_prompt":
-                         "Edit <Video 1> with the outfit from <Picture 1>."}), None, None),
+            (json.dumps({"minimax_prompt": minimax}), None, None),
         ]
         result = self.enhance(qwen_thinking="low", minimax_thinking="xhigh")
-        self.assertEqual(result[0], qwen)
-        self.assertEqual([c.args[4] for c in self.request.call_args_list], ["low", "xhigh", "xhigh"])
-
-    def test_separate_thinking_invalid_qwen_stops_before_minimax(self):
-        self.request.return_value = (json.dumps({"qwen_prompt": "Edit missing images"}), None, None)
-        with self.assertRaisesRegex(ValueError, "Qwen prompt must reference"):
-            self.enhance(qwen_thinking="low", minimax_thinking="off")
-        self.assertEqual(self.request.call_count, 1)
+        self.assertEqual(result, (qwen, minimax))
+        self.assertEqual([c.args[4] for c in self.request.call_args_list], ["low", "xhigh"])
         self.server.stop.assert_called_once()
+
+    def test_separate_thinking_plain_text_is_used_directly(self):
+        self.request.side_effect = [("Plain Qwen instruction", None, None),
+                                    ("Plain MiniMax instruction", None, None)]
+        self.assertEqual(self.enhance(qwen_thinking="low", minimax_thinking="off"),
+                         ("Plain Qwen instruction", "Plain MiniMax instruction"))
+        self.assertEqual(self.request.call_count, 2)
 
     def test_separate_thinking_official_without_optional_reference(self):
         qwen = "Edit <image1>: make the dress red."

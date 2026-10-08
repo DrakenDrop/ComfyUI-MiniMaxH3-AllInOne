@@ -191,3 +191,29 @@ def parse_edit_response_with_repair(content, style, repair, has_reference=True, 
         except V2VPromptError as exc:
             raise type(exc)("MiniMax prompt is still invalid after one repair attempt: " + str(exc)) from exc
         return original_qwen, minimax
+
+
+def prompt_text_unchecked(value):
+    """Serialize structured enhancer output without validating or rewriting its text."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return "\n\n".join(f"{key}:\n{prompt_text_unchecked(text)}" for key, text in value.items())
+    return json.dumps(value, ensure_ascii=False)
+
+
+def prompt_field_unchecked(content, field):
+    """Unwrap a prompt field when possible; otherwise pass the response through."""
+    try:
+        value = json.loads(strip_fence(content))
+    except (TypeError, AttributeError, json.JSONDecodeError):
+        return prompt_text_unchecked(content)
+    if isinstance(value, dict) and field in value:
+        return prompt_text_unchecked(value[field])
+    return prompt_text_unchecked(content)
+
+
+def parse_edit_response_unchecked(content):
+    """No content validation, repair, tag normalization, or audio/anchor policy."""
+    return (prompt_field_unchecked(content, "qwen_prompt"),
+            prompt_field_unchecked(content, "minimax_prompt"))
