@@ -405,6 +405,8 @@ class MiniMaxH3R2VPrompter:
                 asset_notes=kw.get("asset_notes", ""), extra_rules=kw.get("extra_rules", ""),
                 first_frame_label=kw.get("_ff_label"))
             system_text = prompts.SYSTEM_PROMPT_SIMPLE
+            if kw.get("r2v_duration_context") and task == "reference generation":
+                system_text = prompts.SYSTEM_PROMPT_SIMPLE_R2V
             parts = _drop_video_parts(parts)  # the change is described from the request/pictures only -> faster
             opener = kw.get("simple_opener") or prompts.simple_opener(
                 task, bool(vids), any("synchronized audio track" in a for a in auds))

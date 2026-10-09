@@ -62,6 +62,23 @@ for (const file of fs.readdirSync(path.join(root, 'example_workflows')).filter(f
     assert.equal(pipeline.outputs[1].type, 'VIDEO');
     assert(pipeline.inputs.some(i => i.name === 'ref_audio' && i.type === 'AUDIO'));
     assert.equal(pipeline.widgets_values_named.ref_image_1_as_first_frame, false);
+    if (pipeline.type === 'MiniMaxH3R2VFastH3Generate') {
+      assert.deepEqual(pipeline.inputs.map(i => [i.name, i.type]), [
+        ['ref_image', 'IMAGE'], ['ref_audio', 'AUDIO'], ['ref_image_2', 'IMAGE'],
+        ['ref_image_3', 'IMAGE'], ['ref_audio_2', 'AUDIO']]);
+      for (const input of pipeline.inputs) assert(input.link != null);
+      for (const input of pipeline.inputs.slice(2)) assert.equal(input.shape, 7);
+      const defaults = {steps: 8, scheduler: 'simple', sampler_name: 'res_multistep',
+        shift_video: 10, shift_audio: 3, attention_backend: 'comfy kitchen attention',
+        vsa_keep_percent: 10, vsa_start_percent: 0.2, vsa_end_percent: 1,
+        vsa_dense_blocks: '', vsa_min_tokens: 12288, vsa_extra_tokens: 256,
+        vsa_sink_conditioning: 'exact_kv_and_rows', vsa_verbose: false};
+      for (const [key, value] of Object.entries(defaults)) assert.equal(pipeline.widgets_values_named[key], value);
+      assert(pipeline.widgets_values_named.h3_model.includes('fasth3_8step_v2'));
+      assert.equal(pipeline.widgets_values_named.lora_name, '(none)');
+      assert(graph.nodes.some(n => n.type === 'MarkdownNote' && n.widgets_values_named.text.includes('not distilled for Ref2VA')));
+      assert(!graph.nodes.some(n => n.type === 'MiniMaxH3ImageToVideo'));
+    }
   }
   checked++; console.log('PASS ' + file + ': ' + graph.nodes.length + ' nodes, ' + graph.links.length + ' valid links');
 }

@@ -390,6 +390,14 @@ def clean_output(text: str, keep_timed_beats: bool = False) -> str:
 
 
 # ------------------------------------------------------------------ SIMPLE prompt style
+SYSTEM_PROMPT_SIMPLE_R2V = """Write a short MiniMax H3 reference-generation prompt appropriate for the video duration in the request.
+Choose the actions, pacing and narrative to suit that duration and the user's request.
+Output one concise English paragraph, without headings, lists, shot labels or numeric timestamps.
+Respect all explicit user constraints.
+Ground appearance in the supplied images. Preserve the exact <Picture N>, <Audio N> and <Subject N> labels,
+subject identities and audio-to-subject mapping. Keep quoted dialogue verbatim inside <d>[Language] ...</d>;
+do not invent or shorten speech. Describe only the resulting video, not the planning process."""
+
 SYSTEM_PROMPT_SIMPLE = """You turn a user's request into a SHORT prompt for MiniMax H3, an audiovisual video model.
 
 Output 1-3 plain English sentences and nothing else: no headings, no section names, no lists, no [Shot N], no timestamps, no markdown, no notes.

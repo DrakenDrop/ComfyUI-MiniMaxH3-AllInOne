@@ -202,6 +202,46 @@ class R2VRoutingTests(unittest.TestCase):
         self.assertNotIn("image_2", kw)
         self.assertNotIn("audio_2", kw)
 
+    def test_requested_duration_is_conveyed_without_fixed_action_templates(self):
+        for style in ("official", "simple"):
+            plans = []
+            for seconds, frames in ((5, 124), (10, 243), (15, 362)):
+                with self.subTest(style=style, seconds=seconds):
+                    self.generate(duration_seconds=seconds, minimax_prompt_style=style,
+                        ref_image_2=self.images[1], ref_image_3=self.images[2], ref_audio_2=self.audios[1])
+                    kw = self.enhancer.call_args.kwargs
+                    self.assertEqual(kw["duration_seconds"], seconds)
+                    self.assertEqual(kw["frame_count"], frames)
+                    self.assertEqual(kw["length"], "standard")
+                    self.assertTrue(kw["r2v_duration_context"])
+                    self.assertIn(f"This video is for {seconds} seconds.", kw["extra_rules"])
+                    self.assertIn(f"appropriate for a {seconds}-second video", kw["extra_rules"])
+                    self.assertIn("Choose the shots, actions, pacing and narrative", kw["extra_rules"])
+                    self.assertIn("subject/audio mapping", kw["extra_rules"])
+                    self.assertNotIn("planning_duration_s", kw)
+                    self.assertEqual(self.conditioning.call_args.kwargs["length"], frames)
+                    self.assert_references([0, 1, 2], True)
+                    plans.append(kw["extra_rules"].replace(str(seconds), "DURATION"))
+            # Only the numeric duration changes; no duration-specific action/shot template.
+            self.assertEqual(len(set(plans)), 1)
+
+    def test_duration_context_does_not_add_output_rejection_or_rewriting(self):
+        self.enhancer.return_value = (PROMPT.replace("The person walks.",
+            "The person walks. [Shot 2] At 00:05.000, the camera cuts."),)
+        result = self.generate(duration_seconds=5)
+        self.assertEqual(result[3], self.enhancer.return_value[0])
+        self.conditioning.assert_called_once()
+        self.node._sample.assert_called_once()
+        self.stop.assert_called_once()
+
+    def test_duration_does_not_rewrite_or_validate_user_override(self):
+        for style in ("official", "simple"):
+            override = PROMPT if style == "official" else "Keep <Picture 1> and <Audio 1>."
+            override += " [Shot 2] At 00:20.000, the camera cuts."
+            result = self.generate(duration_seconds=5, prompt_override=override, minimax_prompt_style=style)
+            self.assertEqual(result[3], override)
+            self.enhancer.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

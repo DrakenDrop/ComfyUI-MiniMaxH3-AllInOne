@@ -1,0 +1,506 @@
+{
+  "last_node_id": 8,
+  "last_link_id": 6,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "LoadImage",
+      "pos": [
+        0,
+        80
+      ],
+      "size": [
+        310,
+        220
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null,
+          "slot_index": 1
+        }
+      ],
+      "title": "Picture 1",
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "reference_1.png"
+      ],
+      "widgets_values_named": {
+        "image": "reference_1.png"
+      }
+    },
+    {
+      "id": 2,
+      "type": "LoadAudio",
+      "pos": [
+        0,
+        980
+      ],
+      "size": [
+        310,
+        220
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "AUDIO",
+          "type": "AUDIO",
+          "links": [
+            2
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "Audio 1",
+      "properties": {
+        "Node name for S&R": "LoadAudio"
+      },
+      "widgets_values": [
+        "reference_1.wav"
+      ],
+      "widgets_values_named": {
+        "audio": "reference_1.wav"
+      }
+    },
+    {
+      "id": 3,
+      "type": "MiniMaxH3R2VFastH3Generate",
+      "pos": [
+        410,
+        80
+      ],
+      "size": [
+        540,
+        1560
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "ref_image",
+          "type": "IMAGE",
+          "link": 1
+        },
+        {
+          "name": "ref_audio",
+          "type": "AUDIO",
+          "link": 2
+        },
+        {
+          "name": "ref_image_2",
+          "type": "IMAGE",
+          "shape": 7,
+          "link": 4
+        },
+        {
+          "name": "ref_image_3",
+          "type": "IMAGE",
+          "shape": 7,
+          "link": 5
+        },
+        {
+          "name": "ref_audio_2",
+          "type": "AUDIO",
+          "shape": 7,
+          "link": 6
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": null,
+          "slot_index": 0
+        },
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": [
+            3
+          ],
+          "slot_index": 1
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "links": null,
+          "slot_index": 2
+        },
+        {
+          "name": "prompt",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 3
+        },
+        {
+          "name": "width",
+          "type": "INT",
+          "links": null,
+          "slot_index": 4
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "links": null,
+          "slot_index": 5
+        },
+        {
+          "name": "frame_count",
+          "type": "INT",
+          "links": null,
+          "slot_index": 6
+        }
+      ],
+      "title": "R2V FastH3 (Experimental): 3 images + 2 audio",
+      "properties": {
+        "Node name for S&R": "MiniMaxH3R2VFastH3Generate"
+      },
+      "widgets_values": [
+        "fastvideo_fasth3_8step_v2_pruned_int8_convrot.safetensors",
+        "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+        "minimax_h3_video_vae_int8_convrot.safetensors",
+        "(llama-server yang sudah jalan)",
+        "auto",
+        "The person in <Picture 1> speaks using the voice from <Audio 2>; the person in <Picture 2> answers using the voice from <Audio 1>. Use <Picture 3> for the setting.",
+        "480p",
+        "same as reference",
+        "16:9",
+        8,
+        "res_multistep",
+        "simple",
+        0,
+        "minimax_h3_audio_vae_fp32.safetensors",
+        5,
+        "generate from reference",
+        false,
+        "",
+        "",
+        "(none)",
+        1,
+        "match",
+        3072,
+        32768,
+        "http://127.0.0.1:8080",
+        true,
+        "official",
+        "off",
+        false,
+        10.0,
+        3.0,
+        "comfy kitchen attention",
+        10.0,
+        0.2,
+        1.0,
+        "",
+        12288,
+        256,
+        "exact_kv_and_rows",
+        false
+      ],
+      "widgets_values_named": {
+        "h3_model": "fastvideo_fasth3_8step_v2_pruned_int8_convrot.safetensors",
+        "h3_text_encoder": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+        "h3_video_vae": "minimax_h3_video_vae_int8_convrot.safetensors",
+        "llm_model": "(llama-server yang sudah jalan)",
+        "mmproj": "auto",
+        "instruction": "The person in <Picture 1> speaks using the voice from <Audio 2>; the person in <Picture 2> answers using the voice from <Audio 1>. Use <Picture 3> for the setting.",
+        "resolution": "480p",
+        "aspect_ratio": "same as reference",
+        "custom_aspect": "16:9",
+        "steps": 8,
+        "sampler_name": "res_multistep",
+        "scheduler": "simple",
+        "seed": 0,
+        "h3_audio_vae": "minimax_h3_audio_vae_fp32.safetensors",
+        "duration_seconds": 5,
+        "audio_mode": "generate from reference",
+        "ref_image_1_as_first_frame": false,
+        "additional_system_prompt": "",
+        "prompt_override": "",
+        "lora_name": "(none)",
+        "lora_strength": 1,
+        "ref_image_size": "match",
+        "max_tokens": 3072,
+        "context_size": 32768,
+        "server_url": "http://127.0.0.1:8080",
+        "unload_llm_after_prompt": true,
+        "minimax_prompt_style": "official",
+        "minimax_thinking": "off",
+        "keep_models_loaded": false,
+        "shift_video": 10.0,
+        "shift_audio": 3.0,
+        "attention_backend": "comfy kitchen attention",
+        "vsa_keep_percent": 10.0,
+        "vsa_start_percent": 0.2,
+        "vsa_end_percent": 1.0,
+        "vsa_dense_blocks": "",
+        "vsa_min_tokens": 12288,
+        "vsa_extra_tokens": 256,
+        "vsa_sink_conditioning": "exact_kv_and_rows",
+        "vsa_verbose": false
+      }
+    },
+    {
+      "id": 4,
+      "type": "SaveVideo",
+      "pos": [
+        1030,
+        80
+      ],
+      "size": [
+        310,
+        150
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": null,
+          "slot_index": 0
+        }
+      ],
+      "title": "Save Video",
+      "properties": {
+        "Node name for S&R": "SaveVideo"
+      },
+      "widgets_values": [
+        "video/MiniMax_R2V_FastH3_Experimental",
+        "auto",
+        "auto"
+      ],
+      "widgets_values_named": {
+        "filename_prefix": "video/MiniMax_R2V_FastH3_Experimental",
+        "format": "auto",
+        "codec": "auto"
+      }
+    },
+    {
+      "id": 5,
+      "type": "LoadImage",
+      "pos": [
+        0,
+        380
+      ],
+      "size": [
+        310,
+        220
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            4
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null,
+          "slot_index": 1
+        }
+      ],
+      "title": "Picture 2",
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "reference_2.png"
+      ],
+      "widgets_values_named": {
+        "image": "reference_2.png"
+      }
+    },
+    {
+      "id": 6,
+      "type": "LoadImage",
+      "pos": [
+        0,
+        680
+      ],
+      "size": [
+        310,
+        220
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            5
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null,
+          "slot_index": 1
+        }
+      ],
+      "title": "Picture 3 / setting",
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "reference_3.png"
+      ],
+      "widgets_values_named": {
+        "image": "reference_3.png"
+      }
+    },
+    {
+      "id": 7,
+      "type": "LoadAudio",
+      "pos": [
+        0,
+        1280
+      ],
+      "size": [
+        310,
+        220
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "AUDIO",
+          "type": "AUDIO",
+          "links": [
+            6
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "Audio 2",
+      "properties": {
+        "Node name for S&R": "LoadAudio"
+      },
+      "widgets_values": [
+        "reference_2.wav"
+      ],
+      "widgets_values_named": {
+        "audio": "reference_2.wav"
+      }
+    },
+    {
+      "id": 8,
+      "type": "MarkdownNote",
+      "pos": [
+        1030,
+        320
+      ],
+      "size": [
+        540,
+        520
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "title": "Read before running",
+      "properties": {},
+      "widgets_values": [
+        "EXPERIMENTAL R2V FastH3\n\nThis keeps MiniMaxH3ReferenceToVideo conditioning, NOT I2V. FastH3 8-Step V2 was not distilled for Ref2VA. Multi-reference fidelity, audio and speed are unvalidated.\n\nInternal model chain: loader (+ optional LoRA) -> MiniMaxH3SigmaShift (10 / 3) -> ModelAttentionBackend (comfy kitchen attention) -> BlockSparseAttention (VSA, keep 10%, 0.2-1, min 12288, extra 256, exact_kv_and_rows) -> BasicGuider AND BasicScheduler.\n\nNeeds recent ComfyUI with those native nodes and compatible Comfy Kitchen kernels. Select your local model/encoder/VAEs and llama.cpp model/server, then choose the five reference files. Extra references are optional; disconnected image slots are renumbered consecutively. Exact audio reuse copies only Audio 1.\n\nUpstream scope: https://huggingface.co/FastVideo/FastVideo-FastH3-8-Step-V2"
+      ],
+      "widgets_values_named": {
+        "text": "EXPERIMENTAL R2V FastH3\n\nThis keeps MiniMaxH3ReferenceToVideo conditioning, NOT I2V. FastH3 8-Step V2 was not distilled for Ref2VA. Multi-reference fidelity, audio and speed are unvalidated.\n\nInternal model chain: loader (+ optional LoRA) -> MiniMaxH3SigmaShift (10 / 3) -> ModelAttentionBackend (comfy kitchen attention) -> BlockSparseAttention (VSA, keep 10%, 0.2-1, min 12288, extra 256, exact_kv_and_rows) -> BasicGuider AND BasicScheduler.\n\nNeeds recent ComfyUI with those native nodes and compatible Comfy Kitchen kernels. Select your local model/encoder/VAEs and llama.cpp model/server, then choose the five reference files. Extra references are optional; disconnected image slots are renumbered consecutively. Exact audio reuse copies only Audio 1.\n\nUpstream scope: https://huggingface.co/FastVideo/FastVideo-FastH3-8-Step-V2"
+      }
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      3,
+      0,
+      "IMAGE"
+    ],
+    [
+      2,
+      2,
+      0,
+      3,
+      1,
+      "AUDIO"
+    ],
+    [
+      3,
+      3,
+      1,
+      4,
+      0,
+      "VIDEO"
+    ],
+    [
+      4,
+      5,
+      0,
+      3,
+      2,
+      "IMAGE"
+    ],
+    [
+      5,
+      6,
+      0,
+      3,
+      3,
+      "IMAGE"
+    ],
+    [
+      6,
+      7,
+      0,
+      3,
+      4,
+      "AUDIO"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}

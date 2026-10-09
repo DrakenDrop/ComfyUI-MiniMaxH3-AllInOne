@@ -71,6 +71,40 @@ The node loads H3 ref2va, the H3 text encoder, video VAE and audio VAE. It write
 - `audio_mode`: generate from reference lets H3 use all connected audio clips as conditioning, with subject mapping specified in `instruction`. Reuse reference exactly copies only the original `ref_audio` (`<Audio 1>`) waveform into the output, trimmed to the generated duration; it never mixes or concatenates `ref_audio_2`. A shorter first audio reference ends before the video. Both connected audio clips still reach H3 conditioning, and H3's joint sampling runs in both R2V audio modes.
 - The sampler, scheduler, steps and optional LoRA are widgets in the node. Choosing a turbo LoRA does not change steps automatically; choose the appropriate step count yourself.
 
+### Duration-aware R2V enhancement
+
+Both R2V nodes explicitly tell the enhancer the selected `duration_seconds`. For 5 seconds, the instruction is: **"This video is for 5 seconds. Write a prompt appropriate for a 5-second video."** It asks the LLM to choose the shots, actions, pacing and narrative to suit the duration and user request, keep any described times within that duration, and preserve reference labels and subject/audio mapping. The same instruction uses 10 or 15 when those durations are selected.
+
+There are no fixed 5/10/15-second action templates, forced timelines, duration-specific prompt lengths or new timestamp rejection/rewriting rules. The LLM decides what fits. Both official and simple styles receive the duration; simple R2V permits the requested actions and pacing in its short paragraph. Existing format/first-frame policies remain, and V2V's simple-style behavior is unchanged.
+
+H3's existing frame rounding is unchanged: 5/10/15 seconds produce 124/243/362 frames, or approximately 5.167/10.125/15.083 seconds. The instruction uses the **selected** duration; the standard official target metadata still reports the physical frame duration. This change does not retime or trim the video.
+
+`prompt_override` still bypasses enhancement. Tests verify that 5/10/15 seconds reach the actual LLM messages without fixed action templates. LLM wording and adherence remain model-dependent; different durations do not guarantee distinct outputs.
+
+## R2V FastH3 (experimental)
+
+Select **MiniMax H3 R2V FastH3 Generate (Experimental)**, or load [the example with three images and two audio clips](example_workflows/r2v_fasth3_experimental.json). Choose your local model files, reference media and llama.cpp model/server before running.
+
+This is a separate node (`MiniMaxH3R2VFastH3Generate`) that inherits R2V generation. It retains `MiniMaxH3ReferenceToVideo` conditioning, consecutive reference labels, the first-image-only frame guide, instruction-based audio-to-subject mapping, and exact reuse of only the first audio. Existing R2V workflows and defaults stay unchanged.
+
+Only the model patch chain is adapted from the supplied `video_fastvideo_fasth3_i2v.json` example:
+
+`Load Model (+ optional LoRA) -> MiniMaxH3SigmaShift -> ModelAttentionBackend -> BlockSparseAttention -> BasicGuider AND BasicScheduler`
+
+| Native node | FastH3 variant defaults |
+| --- | --- |
+| `MiniMaxH3SigmaShift` (ModelSamplingMiniMaxH3) | Video shift `10`, audio shift `3` |
+| `ModelAttentionBackend` | `comfy kitchen attention` |
+| `BlockSparseAttention` (Model Sparse Attention) | `vsa`; keep `10%`; start `0.2`, end `1.0`; dense blocks empty; minimum tokens `12288`; extra tokens `256`; sink conditioning `exact_kv_and_rows`; verbose off |
+
+The settings are exposed as `shift_video`, `shift_audio`, `attention_backend` and `vsa_*` widgets. The VSA method and exact conditioning-sink mode match the template. The sampler defaults to `res_multistep`, `simple`, 8 steps, with denoise 1 and BasicGuider guidance 1. The model selector prefers FastH3 filenames; the example selects `fastvideo_fasth3_8step_v2_pruned_int8_convrot.safetensors`. Model, LoRA, sampler and step settings remain selectable. Patches are rebuilt from the loaded model each run, rather than accumulated in its loader cache.
+
+**Checkpoint limitation:** the [upstream FastH3 8-Step V2 model card](https://huggingface.co/FastVideo/FastVideo-FastH3-8-Step-V2) says **FL2VA and Ref2VA were not distilled**. The supplied I2V template describes a broader FL2VA scope, but agrees that Ref2VA was not distilled. This variant applies the requested model patches while retaining R2V; it does not establish trained multi-reference support, reference fidelity, audio quality or a speedup. For supported reference-based use, keep the base H3 Ref2VA checkpoint and the original R2V node. [ComfyUI checkpoint files](https://huggingface.co/FastVideo/FastVideo-FastH3-Comfy).
+
+**Dependencies:** recent ComfyUI providing all three native nodes, including `BlockSparseAttention`'s VSA selection, plus compatible Comfy Kitchen GPU kernels. The reference template records comfy-core `0.39.1`; feature availability is the requirement, not a proven minimum version. Missing patch imports produce an update message when this variant runs; they do not prevent loading the original nodes. Native `ModelAttentionBackend` warns and uses PyTorch if Comfy Kitchen dense attention is unavailable; sparse attention can also run dense outside its active range or below its token threshold. This is upstream behavior, so the configured chain is not a guarantee of GPU acceleration. No dependency installation or model download is performed automatically.
+
+CPU tests cover patch order, shared patched-model routing into guider/scheduler, settings, repeated runs, missing dependencies and all inherited R2V reference/audio behavior. Full ComfyUI execution, kernel compatibility, VRAM, speed and generated quality still require a GPU validation run.
+
 ## V2V Edit
 
 `Load Video (IMAGE output) + optional Load Image -> MiniMax H3 V2V Edit -> IMAGE output`

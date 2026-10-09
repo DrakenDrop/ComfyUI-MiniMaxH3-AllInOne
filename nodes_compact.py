@@ -91,7 +91,7 @@ class _Pipeline:
 
     def _prompt(self, *, ref_image, frames, instruction, llm_model, mmproj, seed,
                 video=None, first_frame=None, audio=None, additional_system_prompt="",
-                ref_images=None, ref_audios=None,
+                ref_images=None, ref_audios=None, duration_seconds=None,
                 prompt_override="", max_tokens=3072, context_size=32768,
                 server_url="http://127.0.0.1:8080", unload_llm_after_prompt=True, minimax_prompt_style="official", minimax_thinking="off", keep_models_loaded=False, **unused):
         if minimax_thinking not in prompter.THINKING:
@@ -114,6 +114,14 @@ class _Pipeline:
             if first_frame is not None:
                 assets["first_frame"] = first_frame
             rules = ""
+            timing_kw = {}
+            if video is None and duration_seconds is not None:
+                rules = (f"This video is for {duration_seconds:g} seconds. "
+                         f"Write a prompt appropriate for a {duration_seconds:g}-second video. "
+                         "Choose the shots, actions, pacing and narrative to suit this duration and the user's request. "
+                         f"Keep any described times within 0 to {duration_seconds:g} seconds; timestamps are optional. "
+                         "Preserve reference labels and the requested subject/audio mapping.")
+                timing_kw = {"r2v_duration_context": True}
             if video is not None:
                 rules = ("VIDEO-ONLY EDIT. Do not write dialogue, vocals, sound effects or music. "
                          "Set overall_soundscape and non_diegetic_music to N/A. Never define <Audio N>. "
@@ -124,12 +132,14 @@ class _Pipeline:
                 prompt = prompter.MiniMaxH3R2VPrompter().generate(
                     instruction=instruction, task="video editing" if video is not None else "reference generation",
                     frame_anchor="reference 1 = first frame" if unused.get("ref_image_1_as_first_frame", False) else "none",
-                    duration_seconds=frames / 24, thinking=minimax_thinking, length="standard",
+                    duration_seconds=duration_seconds if duration_seconds is not None else frames / 24,
+                    thinking=minimax_thinking, length="standard",
                     allow_invented_dialogue=False, max_tokens=max_tokens, seed=int(seed) % (2**32),
                     model=llm_model, mmproj=mmproj, frame_count=frames,
                     additional_system_prompt=additional_system_prompt, extra_rules=rules,
                     context_size=context_size, server_url=server_url, describe_refs=True,
-                    prompt_style="simple" if minimax_prompt_style == "simple" else "full (official H3)", **assets)[0]
+                    prompt_style="simple" if minimax_prompt_style == "simple" else "full (official H3)",
+                    **timing_kw, **assets)[0]
             finally:
                 if unload_llm_after_prompt and llm_model != local_models.SERVER_DEFAULT:
                     managed_server.stop(CFG)
@@ -211,7 +221,8 @@ class MiniMaxH3R2VGenerate(_Pipeline):
             instruction += "\n<Picture 1> is the first frame of [Shot 1]; the video begins from <Picture 1>."
         prompt_kw = {**kw, "instruction": instruction, "ref_image_1_as_first_frame": ref_image_1_as_first_frame}
         prompt = self._prompt(ref_image=ref_images[0], audio=ref_audio, frames=frames,
-                              ref_images=ref_images, ref_audios=ref_audios, **prompt_kw)
+                              ref_images=ref_images, ref_audios=ref_audios,
+                              duration_seconds=duration_seconds, **prompt_kw)
         positive, latent = args(h3.MiniMaxH3ReferenceToVideo.execute(
             clip=clip, vae=vae, audio_vae=audio_vae, prompt=prompt, width=w, height=h, length=frames,
             ref_image_size=kw.get("ref_image_size", "match"),
