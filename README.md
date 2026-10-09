@@ -5,7 +5,7 @@ All-in-one ComfyUI nodes for **MiniMax H3 reference-to-video (R2V)** and **exper
 ## Features
 
 - Character swap with direct H3 video/image references and RGB FunControlNet, without Qwen Image.
-- R2V with one reference image and one reference audio clip.
+- R2V with up to three reference images and two reference audio clips.
 - V2V with source video frames as an IMAGE batch and an optional appearance reference image.
 - Qwen Image 2.1 editing of the source video's first frame.
 - Internal DWPose skeleton control with H3-compatible Fun ControlNet Union weights, without masking; legacy RGB control is also available.
@@ -104,12 +104,16 @@ Try [V2V decoded IMAGE frames](example_workflows/v2v_decoded_images.json): sourc
 
 `Load Image + Load Audio -> MiniMax H3 R2V Generate -> Save Video`
 
-Required reference assets: one image and one audio clip. No reference-video socket.
+Required reference assets: `ref_image` and `ref_audio`. Optionally connect `ref_image_2`, `ref_image_3`, and `ref_audio_2` for up to three images and two audio clips. Existing workflows can leave all new inputs disconnected. No reference-video socket.
+
+Connected images are labeled consecutively in input order: `<Picture 1>`, `<Picture 2>`, `<Picture 3>`. If only `ref_image` and `ref_image_3` are connected, they become `<Picture 1>` and `<Picture 2>`. Only the first image in each input batch is used. Audio labels are `<Audio 1>` (`ref_audio`) and `<Audio 2>` (`ref_audio_2`). The enhancer and H3 conditioning receive the same ordered references. Numbering does not pair an audio clip with an image: describe each subject's audio reference in `instruction`.
+
+For example, with all inputs connected: `The person in <Picture 1> speaks using the voice from <Audio 2>; the person in <Picture 2> answers using the voice from <Audio 1>. Use <Picture 3> for the setting.` This guides generated audio; it does not splice the two clips into the output. When using `prompt_override`, use these same labels in your complete H3 prompt.
 
 The node loads H3 ref2va, the H3 text encoder, video VAE and audio VAE. It writes a simple or official six-section prompt through llama.cpp, encodes references, samples with BasicGuider (guidance 1), decodes, and returns a VIDEO object with audio.
 
-- `ref_image_1_as_first_frame`: Yes declares `<Picture 1>` as the first frame in the prompt and adds a native H3 guide at frame 0. No uses the image as an appearance reference. The image is resized/cropped to the selected canvas, so a changed aspect ratio cannot preserve its original pixels exactly.
-- `audio_mode`: generate from reference lets H3 use the audio as conditioning; reuse reference exactly copies the original waveform into the output, trimmed to the generated duration. A shorter reference ends before the video. H3's joint sampling still runs in both R2V audio modes.
+- `ref_image_1_as_first_frame`: Yes declares only `<Picture 1>` (`ref_image`) as the first frame in the prompt and adds a native H3 guide at frame 0. Additional images remain references. No uses the first image as an appearance reference. The first image also determines `same as reference` canvas proportions and is resized/cropped to the selected canvas, so a changed aspect ratio cannot preserve its original pixels exactly.
+- `audio_mode`: generate from reference lets H3 use all connected audio clips as conditioning, with subject mapping specified in `instruction`. Reuse reference exactly copies only the original `ref_audio` (`<Audio 1>`) waveform into the output, trimmed to the generated duration; it never mixes or concatenates `ref_audio_2`. A shorter first audio reference ends before the video. Both connected audio clips still reach H3 conditioning, and H3's joint sampling runs in both R2V audio modes.
 - The sampler, scheduler, steps and optional LoRA are widgets in the node. Choosing a turbo LoRA does not change steps automatically; choose the appropriate step count yourself.
 
 ## V2V Edit

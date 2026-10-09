@@ -91,6 +91,7 @@ class _Pipeline:
 
     def _prompt(self, *, ref_image, frames, instruction, llm_model, mmproj, seed,
                 video=None, first_frame=None, audio=None, additional_system_prompt="",
+                ref_images=None, ref_audios=None,
                 prompt_override="", max_tokens=3072, context_size=32768,
                 server_url="http://127.0.0.1:8080", unload_llm_after_prompt=True, minimax_prompt_style="official", minimax_thinking="off", keep_models_loaded=False, **unused):
         if minimax_thinking not in prompter.THINKING:
@@ -102,13 +103,16 @@ class _Pipeline:
             import comfy.model_management
             if not keep_models_loaded:
                 comfy.model_management.unload_all_models()
-            assets = {"image_1": ref_image}
+            # R2V passes the same ordered references to the enhancer and H3.
+            # Retain the single-reference arguments for other pipeline callers.
+            images = ref_images if ref_images is not None else [ref_image]
+            audios = ref_audios if ref_audios is not None else ([audio] if audio is not None else [])
+            assets = {f"image_{i}": image for i, image in enumerate(images, 1)}
+            assets.update({f"audio_{i}": clip for i, clip in enumerate(audios, 1)})
             if video is not None:
                 assets["video_1"] = video
             if first_frame is not None:
                 assets["first_frame"] = first_frame
-            if audio is not None:
-                assets["audio_1"] = audio
             rules = ""
             if video is not None:
                 rules = ("VIDEO-ONLY EDIT. Do not write dialogue, vocals, sound effects or music. "
@@ -161,7 +165,7 @@ class MiniMaxH3R2VGenerate(_Pipeline):
     FUNCTION = "generate"
     RETURN_TYPES = ("IMAGE", "VIDEO", "AUDIO", "STRING", "INT", "INT", "INT")
     RETURN_NAMES = ("images", "video", "audio", "prompt", "width", "height", "frame_count")
-    DESCRIPTION = "Image + audio -> local llama.cpp prompter -> H3 R2V -> sampler -> VAE Decode IMAGE frames, plus VIDEO and AUDIO. All model loaders are internal."
+    DESCRIPTION = "Up to three reference images + two audio clips -> local llama.cpp prompter -> H3 R2V -> sampler -> VAE Decode IMAGE frames, plus VIDEO and AUDIO. All model loaders are internal."
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -174,29 +178,45 @@ class MiniMaxH3R2VGenerate(_Pipeline):
                 "tooltip": "Yes: declare Picture 1 as first frame in the prompt and anchor it at frame 0"}),
         })
         optional = extra_inputs()
+        optional.update({
+            "ref_image_2": ("IMAGE", {"tooltip": "Additional image reference. Connected images are numbered consecutively in input order as <Picture 1>, <Picture 2>, <Picture 3>."}),
+            "ref_image_3": ("IMAGE", {"tooltip": "Additional image reference; becomes <Picture 2> if ref_image_2 is disconnected."}),
+            "ref_audio_2": ("AUDIO", {"tooltip": "Additional <Audio 2> reference. Map audio to subjects in instruction. Exact reuse still copies only ref_audio (<Audio 1>)."}),
+        })
         optional.update({"minimax_thinking": (list(prompter.THINKING), {"default": "off", "tooltip": "Thinking for the llama.cpp prompt enhancer: off, low, medium, xhigh. Actual support depends on the selected model and server. Higher thinking can use more time and max_tokens; does not change diffusion steps."})})
         optional.update({"keep_models_loaded": ("BOOLEAN", {"default": False, "tooltip": "Skip forced ComfyUI model unloading before the LLM enhancer and retain Qwen loaders across runs. Uses more memory; ComfyUI may still offload as needed. Leave room for llama.cpp, which has separate GPU memory management."})})
         return {"required": required, "optional": optional}
 
     def generate(self, ref_image, ref_audio, h3_audio_vae, duration_seconds, audio_mode,
-                 ref_image_1_as_first_frame=False, **kw):
+                 ref_image_1_as_first_frame=False, ref_image_2=None, ref_image_3=None, ref_audio_2=None, **kw):
         import nodes
         from comfy_extras import nodes_minimax_h3 as h3, nodes_video, nodes_audio
         model, clip, vae = self._base_models(**kw)
         audio_vae = nodes.VAELoader().load_vae(h3_audio_vae)[0]
         frames = geometry.generation_frames(duration_seconds)
         w, h = geometry.canvas(kw["resolution"], kw["aspect_ratio"], ref_image.shape[2], ref_image.shape[1], kw["custom_aspect"])
+        # Compact disconnected slots once so both consumers agree on label numbers.
+        ref_images = [image[:1] for image in (ref_image, ref_image_2, ref_image_3) if image is not None]
+        ref_audios = [clip for clip in (ref_audio, ref_audio_2) if clip is not None]
         instruction = kw["instruction"]
-        instruction += ("\nReuse <Audio 1> exactly as the complete target soundtrack." if audio_mode == "reuse reference exactly"
-                        else "\nUse <Audio 1> as the audio reference according to the user's instruction.")
+        if audio_mode == "reuse reference exactly":
+            instruction += "\nReuse <Audio 1> exactly as the complete target soundtrack."
+            if ref_audio_2 is not None:
+                instruction += " <Audio 2> is a conditioning reference only; the output soundtrack copies only <Audio 1>."
+        else:
+            audio_labels = " and ".join(f"<Audio {i}>" for i in range(1, len(ref_audios) + 1))
+            instruction += (f"\nUse {audio_labels} as audio references according to the user's instruction. "
+                            "Preserve the requested audio-to-subject mapping; reference numbers do not imply pairings.")
         if ref_image_1_as_first_frame:
             instruction += "\n<Picture 1> is the first frame of [Shot 1]; the video begins from <Picture 1>."
         prompt_kw = {**kw, "instruction": instruction, "ref_image_1_as_first_frame": ref_image_1_as_first_frame}
-        prompt = self._prompt(ref_image=ref_image[:1], audio=ref_audio, frames=frames, **prompt_kw)
+        prompt = self._prompt(ref_image=ref_images[0], audio=ref_audio, frames=frames,
+                              ref_images=ref_images, ref_audios=ref_audios, **prompt_kw)
         positive, latent = args(h3.MiniMaxH3ReferenceToVideo.execute(
             clip=clip, vae=vae, audio_vae=audio_vae, prompt=prompt, width=w, height=h, length=frames,
-            ref_image_size=kw.get("ref_image_size", "match"), ref_images={"ref_image_0": ref_image[:1]},
-            ref_audios={"ref_audio_0": ref_audio}))[:2]
+            ref_image_size=kw.get("ref_image_size", "match"),
+            ref_images={f"ref_image_{i}": image for i, image in enumerate(ref_images)},
+            ref_audios={f"ref_audio_{i}": clip for i, clip in enumerate(ref_audios)}))[:2]
         if ref_image_1_as_first_frame:
             positive = args(h3.MiniMaxH3AddGuide.execute(
                 positive=positive, latent=latent, frame_idx=0, vae=vae,
