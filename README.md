@@ -278,13 +278,13 @@ Install [comfyui_controlnet_aux](https://github.com/Fannovel16/comfyui_controlne
 
 ## Resolution and aspect ratio
 
-Presets: 360p, 480p, native 768p. All canvases use multiples of 32. `360p` means a 352px short edge. Native 768p follows core H3's `768*1344` area cap; ultrawide presets can have a shorter edge.
+Presets: 360p, 480p, native 768p. All canvases use multiples of 32. Each preset fixes a pixel **budget** that stays constant for every aspect ratio (including `same as reference`), matching the official H3 buckets. Extreme ratios trade side lengths inside the same budget instead of shrinking or inflating the canvas.
 
-| Preset | 16:9 | 9:16 |
-|---|---|---|
-| 360p | 640 × 352 | 352 × 640 |
-| 480p | 864 × 480 | 480 × 864 |
-| 768p native | 1344 × 768 | 768 × 1344 |
+| Preset | 16:9 | 9:16 | 1:1 | Budget |
+|---|---|---|---|---|
+| 360p | 640 × 352 | 352 × 640 | 480 × 480 | ~0.23 MP |
+| 480p | 832 × 480 | 480 × 832 | 640 × 640 | ~0.40 MP |
+| 768p native | 1344 × 768 | 768 × 1344 | 992 × 992 | ~1.03 MP |
 
 Also available: 1:1, 4:3, 3:4, 3:2, 2:3, 21:9, same as reference, custom. Set custom as `width:height`, e.g. `5:4`. Changing aspect ratio crops the source/reference and affects framing.
 
