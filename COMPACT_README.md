@@ -276,6 +276,16 @@ In official V2V mode, the enhancer is asked for a structured object with six fie
 
 `max_tokens` is the output budget per request, not a guarantee of correct formatting. Matching thinking modes share that budget across both prompts; different modes give each prompt its own request budget. An 8192-token budget can still produce invalid headings; increase it only when the response is actually truncated. V2V passes incomplete output through; inspect its STRING outputs if the result is unexpected.
 
+### R2V prompt flavor
+
+Both R2V nodes (the base R2V Generate and the experimental R2V FastH3) provide `minimax_prompt_flavor`, the writing style of the prompt enhancer:
+
+- `standard` (default): the neutral base voice.
+- `vivid`: cinematic, sensory-rich language - shaped light, precise colors, texture, momentum.
+- `spicy`: the boldest voice - high-contrast seductive lighting, sensual detail and charged attitude, with punchy sentence rhythm.
+
+The flavor is a style addendum on the enhancer system prompt and works in both `official` and `simple` prompt styles. The six-section format, asset labels, retention markers, verbatim dialogue, VERIFIED CONTENT picture descriptions and all task preservation rules stay intact, and the intensity never adds people, actions or wardrobe beyond the request and references. For video-edit tasks the preservation rules (no re-lighting wording) always win over the flavor.
+
 ### Automatic llama-server discovery
 
 For a locally selected GGUF, the node finds and starts an installed `llama-server` automatically. It checks:

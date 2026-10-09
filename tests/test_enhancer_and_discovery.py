@@ -218,5 +218,20 @@ class DiscoveryTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             discovery.discover({}, str(self.root))
 
+class PromptFlavorTests(unittest.TestCase):
+    def test_flavor_table_and_addendum_selection(self):
+        prompts_under_test = load("prompts_under_test", "prompts.py")
+        self.assertEqual(prompts_under_test.PROMPT_FLAVORS, ("standard", "vivid", "spicy"))
+        for empty in ("standard", "", None, "bogus"):
+            self.assertEqual(prompts_under_test.flavor_addendum(empty), "")
+        for flavor, marker in (("vivid", "VIVID STYLE"), ("spicy", "SPICY STYLE")):
+            full = prompts_under_test.flavor_addendum(flavor)
+            self.assertIn(marker, full)
+            self.assertIn("preservation", full)  # style never overrides task preservation rules
+            self.assertIn(marker, prompts_under_test.flavor_addendum(flavor, simple=True))
+            self.assertLess(len(prompts_under_test.flavor_addendum(flavor, simple=True)), len(full))
+        self.assertEqual(prompts_under_test.flavor_addendum("Spicy"),
+                         prompts_under_test.flavor_addendum("spicy"))
+
 if __name__ == "__main__":
     unittest.main()

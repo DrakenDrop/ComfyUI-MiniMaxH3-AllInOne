@@ -186,6 +186,13 @@ class MiniMaxH3R2VPrompter:
                            "mendeskripsikannya (+~1-2 s per gambar, di-cache). Deskripsi itu dipakai sebagai fakta, jadi "
                            "detail baju/objek tidak tertukar dengan isi video. Hasilnya dicetak di console.",
             }),
+            "prompt_flavor": (list(prompts.PROMPT_FLAVORS), {
+                "default": "standard",
+                "tooltip": "Gaya bahasa prompt enhancer. standard = netral (seperti sebelumnya). vivid = sinematik "
+                           "dan kaya detail sensorik (cahaya, warna, tekstur, gerak). spicy = paling intens: berani, "
+                           "sensual, high-contrast. Format resmi H3, label, dialog verbatim, dan aturan preservasi "
+                           "tetap dipertahankan; intensitas tidak pernah menambah konten di luar request/referensi.",
+            }),
         })
         return {"required": required, "optional": optional}
 
@@ -412,6 +419,9 @@ class MiniMaxH3R2VPrompter:
                 task, bool(vids), any("synchronized audio track" in a for a in auds))
             prefill = opener
             max_tokens = min(int(max_tokens), 400)
+        flavor = prompts.flavor_addendum(str(kw.get("prompt_flavor", "standard")), simple=simple)
+        if flavor:
+            system_text += "\n\n" + flavor
         if kw.get("_text_only"):
             parts = []  # a text-only server rejects image parts
         n_img = sum(1 for p in parts if p.get("type") == "image_url")

@@ -93,7 +93,7 @@ class _Pipeline:
                 video=None, first_frame=None, audio=None, additional_system_prompt="",
                 ref_images=None, ref_audios=None, duration_seconds=None,
                 prompt_override="", max_tokens=3072, context_size=32768,
-                server_url="http://127.0.0.1:8080", unload_llm_after_prompt=True, minimax_prompt_style="official", minimax_thinking="off", keep_models_loaded=False, **unused):
+                server_url="http://127.0.0.1:8080", unload_llm_after_prompt=True, minimax_prompt_style="official", minimax_thinking="off", keep_models_loaded=False, minimax_prompt_flavor="standard", **unused):
         if minimax_thinking not in prompter.THINKING:
             raise ValueError(f"Unknown minimax_thinking: {minimax_thinking}")
         if prompt_override.strip():
@@ -139,6 +139,7 @@ class _Pipeline:
                     additional_system_prompt=additional_system_prompt, extra_rules=rules,
                     context_size=context_size, server_url=server_url, describe_refs=True,
                     prompt_style="simple" if minimax_prompt_style == "simple" else "full (official H3)",
+                    prompt_flavor=minimax_prompt_flavor,
                     **timing_kw, **assets)[0]
             finally:
                 if unload_llm_after_prompt and llm_model != local_models.SERVER_DEFAULT:
@@ -195,6 +196,12 @@ class MiniMaxH3R2VGenerate(_Pipeline):
         })
         optional.update({"minimax_thinking": (list(prompter.THINKING), {"default": "off", "tooltip": "Thinking for the llama.cpp prompt enhancer: off, low, medium, xhigh. Actual support depends on the selected model and server. Higher thinking can use more time and max_tokens; does not change diffusion steps."})})
         optional.update({"keep_models_loaded": ("BOOLEAN", {"default": False, "tooltip": "Skip forced ComfyUI model unloading before the LLM enhancer and retain Qwen loaders across runs. Uses more memory; ComfyUI may still offload as needed. Leave room for llama.cpp, which has separate GPU memory management."})})
+        optional.update({"minimax_prompt_flavor": (list(prompter.prompts.PROMPT_FLAVORS), {
+            "default": "standard",
+            "tooltip": "Writing style of the R2V prompt enhancer: standard = neutral, vivid = cinematic and "
+                       "sensory-rich, spicy = boldest and most sensual (still inside the official H3 format, "
+                       "with labels, verbatim dialogue and preservation rules intact). Shared by this node and "
+                       "R2V FastH3."})})
         return {"required": required, "optional": optional}
 
     def generate(self, ref_image, ref_audio, h3_audio_vae, duration_seconds, audio_mode,

@@ -65,7 +65,8 @@ class R2VRoutingTests(unittest.TestCase):
             apply_policy=fmt.apply_policy, args=lambda output: output,
             common_inputs=lambda: {}, extra_inputs=lambda: {}, choices=lambda *a, **kw: [],
             prompter=types.SimpleNamespace(THINKING=["off", "low", "medium", "xhigh"],
-                MiniMaxH3R2VPrompter=lambda: types.SimpleNamespace(generate=self.enhancer)),
+                MiniMaxH3R2VPrompter=lambda: types.SimpleNamespace(generate=self.enhancer),
+                prompts=types.SimpleNamespace(PROMPT_FLAVORS=("standard", "vivid", "spicy"))),
             local_models=types.SimpleNamespace(SERVER_DEFAULT="server default"),
             managed_server=types.SimpleNamespace(stop=self.stop),
             v2v=types.SimpleNamespace(resize_frames=self.resize))
@@ -241,6 +242,18 @@ class R2VRoutingTests(unittest.TestCase):
             result = self.generate(duration_seconds=5, prompt_override=override, minimax_prompt_style=style)
             self.assertEqual(result[3], override)
             self.enhancer.assert_not_called()
+
+    def test_prompt_flavor_reaches_enhancer_in_both_styles(self):
+        schema = self.node.INPUT_TYPES()["optional"]
+        self.assertEqual(schema["minimax_prompt_flavor"][0], ["standard", "vivid", "spicy"])
+        self.assertEqual(schema["minimax_prompt_flavor"][1]["default"], "standard")
+        for style, flavor in (("official", "vivid"), ("official", "spicy"), ("simple", "spicy")):
+            with self.subTest(style=style, flavor=flavor):
+                self.generate(minimax_prompt_style=style, minimax_prompt_flavor=flavor)
+                self.assertEqual(self.enhancer.call_args.kwargs["prompt_flavor"], flavor)
+                self.assert_references([0])
+        self.generate()
+        self.assertEqual(self.enhancer.call_args.kwargs["prompt_flavor"], "standard")
 
 
 if __name__ == "__main__":

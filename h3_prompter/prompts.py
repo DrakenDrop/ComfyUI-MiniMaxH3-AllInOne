@@ -34,6 +34,41 @@ FRAME_ANCHORS = [
     "reference 1 = first frame + last reference = last frame",
 ]
 
+# Style addenda appended to the enhancer system prompt ("" = base behavior).
+PROMPT_FLAVORS = ("standard", "vivid", "spicy")
+
+_FLAVOR_FULL = {
+    "vivid": """VIVID STYLE - write the same prompt with cinematic intensity.
+- Light shapes the scene: name its quality and direction (hard side light, rim light through haze, neon spill on wet pavement) and let surfaces answer it (sheen on satin, dust drifting in a sunbeam, skin catching the key light).
+- Precise, saturated color language (crimson, cobalt, amber) instead of generic adjectives.
+- Motion is muscular and specific: strong verbs, weight, momentum, fabric and hair reacting to every move; the camera moves with intent (type + amplitude + speed).
+- Engage the senses that fit: temperature, texture, near-sounds (a held breath, heel clicks, rain on tin).
+- Turn emotion into readable on-screen behavior: charged glances, a slow smile, knuckles tightening.
+- Intensity comes from craft, never from inventing people, actions, wardrobe or plot the request and references do not contain. Task-specific preservation rules (e.g. video editing) always win over style.""",
+    "spicy": """SPICY STYLE - maximum-heat vivid: bold, sensual, unapologetically cinematic.
+- Commit to the boldest readable interpretation the request supports. Zero hedging, zero filler: punchy sentences with rhythm and confident, concrete verbs.
+- Lighting and color go high-contrast and seductive where it fits: candlelight licking skin, blood-red neon, chiaroscuro shadows, sweat sheen, golden-hour glow tracing every contour.
+- Frame for tension: intimate close-ups, slow deliberate push-ins, lingering reveals, body language that crackles - chemistry, daring, attitude.
+- Sensual energy is welcome and written through craft: bared shoulders, a hitched breath, fabric clinging and sliding, a teasing glance held a beat too long - always tied to what the request and the visible references actually show. Never escalate to explicit sexual content and never make anyone look underage.
+- Describe wardrobe and bodies through cut, fit, sheen and movement (glossy, sheer, skin-tight) only when the request or a reference supports it; never contradict a VERIFIED CONTENT description.
+- Music may carry attitude (grinding beat, sultry bass, breathy vocal) while staying concrete: instruments, tempo, dynamics.
+- Every structural rule above still applies unchanged: six sections, labels, retention markers, verbatim dialogue, timestamp syntax. When style and preservation conflict, preservation wins. Never invent new people, actions or plot beyond the request.""",
+}
+
+_FLAVOR_SIMPLE = {
+    "vivid": "VIVID STYLE: make the few sentences sensory and cinematic - shaped light, precise colors, "
+             "texture, momentum - while staying short and obeying every rule above.",
+    "spicy": "SPICY STYLE: maximum heat and confidence - high-contrast seductive light, sensual detail "
+             "(fit, sheen, skin), charged attitude - while staying short, tasteful and inside every rule "
+             "above; never add content the request does not ask for and never explicit sexual content.",
+}
+
+
+def flavor_addendum(flavor: str, simple: bool = False) -> str:
+    """System-prompt addendum for a prompt flavor; empty string keeps the base voice."""
+    table = _FLAVOR_SIMPLE if simple else _FLAVOR_FULL
+    return table.get(str(flavor or "standard").strip().lower(), "")
+
 SYSTEM_PROMPT_R2V = """You are an expert prompt writer for MiniMax H3, an audiovisual video generation model, in Full-Reference mode. You convert a user's request plus labeled reference assets into ONE final H3 prompt that follows the official MiniMax H3 Full-Reference prompt-writing guide.
 
 OUTPUT FORMAT - exactly these six sections, in this order, each header on its own line followed by its content:
