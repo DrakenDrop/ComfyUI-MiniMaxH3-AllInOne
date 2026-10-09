@@ -35,11 +35,39 @@ class PromptRegressionTests(unittest.TestCase):
         self.assertEqual(fmt.apply_policy(json.dumps(SECTIONS)), PLAIN)
         self.assertEqual(fmt.apply_policy(PLAIN.replace("\n", "\\n")), PLAIN)
 
-    def test_missing_and_duplicate_sections_fail_with_diagnostics(self):
+    def test_partial_prompt_passes_through_and_strict_mode_raises(self):
+        partial = PLAIN.rsplit("\n\n", 1)[0]  # non_diegetic_music missing
+        result = fmt.apply_policy(partial)
+        self.assertNotIn("non_diegetic_music:", result)
+        self.assertTrue(result.startswith("subject_definitions:"))
+        notes = []
+        self.assertEqual(fmt.apply_policy(partial, on_partial=notes.append), result)
+        self.assertEqual(len(notes), 1)
+        self.assertIn("missing: non_diegetic_music", notes[0])
         with self.assertRaisesRegex(ValueError, "Missing: non_diegetic_music"):
-            fmt.apply_policy(PLAIN.rsplit("\n\n", 1)[0])
+            fmt.apply_policy(partial, strict=True)
+        # duplicate headings: lenient keeps the first block, strict raises
+        duplicated = PLAIN + "\nsummary:\nduplicate"
+        self.assertEqual(fmt.apply_policy(duplicated), PLAIN)
         with self.assertRaises(ValueError):
-            fmt.apply_policy(PLAIN + "\nsummary:\nduplicate")
+            fmt.apply_policy(duplicated, strict=True)
+        # free-form text with no section heading passes through unchanged
+        self.assertEqual(fmt.apply_policy("truncated result"), "truncated result")
+        with self.assertRaises(ValueError):
+            fmt.apply_policy("")
+
+    def test_partial_prompt_policies_touch_only_present_sections(self):
+        partial = ("subject_definitions:\n<Subject 1> is the person from <Picture 1>.\n\n"
+                   "detailed_description:\n[Shot 1] The person walks.")
+        result = fmt.apply_policy(partial, first_frame=True, silent=False)
+        self.assertIn("<Picture 1> is the first frame of [Shot 1]", result)
+        self.assertIn("[Shot 1] The shot begins from <Picture 1>.", result)
+        self.assertNotIn("summary:", result)
+        self.assertNotIn("retention_analysis:", result)
+        silent = fmt.apply_policy(partial, silent=True)
+        self.assertNotIn("overall_soundscape:", silent)  # absent sections are not invented
+        self.assertEqual(fmt.apply_policy("plain prose", first_frame=True),
+                         "plain prose\nThe video begins from <Picture 1> as its first frame.")
 
     def test_dual_response_official_and_simple(self):
         qwen = "Edit <image1> using the outfit in <image2>."

@@ -41,6 +41,7 @@ class R2VRoutingTests(unittest.TestCase):
         self.create_video = Mock(return_value=("video",))
         self.resize = Mock(side_effect=lambda image, *args: image)
         self.unload, self.stop = Mock(), Mock()
+        self.lc = types.SimpleNamespace(log=Mock())
         comfy = types.ModuleType("comfy")
         comfy.model_management = types.SimpleNamespace(unload_all_models=self.unload)
         h3 = types.SimpleNamespace(
@@ -65,7 +66,8 @@ class R2VRoutingTests(unittest.TestCase):
             apply_policy=fmt.apply_policy, args=lambda output: output,
             common_inputs=lambda: {}, extra_inputs=lambda: {}, choices=lambda *a, **kw: [],
             prompter=types.SimpleNamespace(THINKING=["off", "low", "medium", "xhigh"],
-                MiniMaxH3R2VPrompter=lambda: types.SimpleNamespace(generate=self.enhancer)),
+                MiniMaxH3R2VPrompter=lambda: types.SimpleNamespace(generate=self.enhancer),
+                lc=self.lc),
             local_models=types.SimpleNamespace(SERVER_DEFAULT="server default"),
             managed_server=types.SimpleNamespace(stop=self.stop),
             v2v=types.SimpleNamespace(resize_frames=self.resize))
@@ -241,6 +243,18 @@ class R2VRoutingTests(unittest.TestCase):
             result = self.generate(duration_seconds=5, prompt_override=override, minimax_prompt_style=style)
             self.assertEqual(result[3], override)
             self.enhancer.assert_not_called()
+
+    def test_truncated_official_prompt_still_generates_with_warning(self):
+        # one section out of six: the run continues instead of raising a format error
+        self.enhancer.return_value = ("subject_definitions:\n<Subject 1> is the person from <Picture 1>.",)
+        result = self.generate()
+        self.assertTrue(result[3].startswith("subject_definitions:"))
+        self.assertNotIn("summary:", result[3])
+        self.conditioning.assert_called_once()
+        self.node._sample.assert_called_once()
+        self.lc.log.assert_called_once()
+        self.assertIn("1/6", self.lc.log.call_args.args[0])
+        self.assertIn("WARNING", self.lc.log.call_args.args[0])
 
 
 if __name__ == "__main__":
