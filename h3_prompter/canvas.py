@@ -4,6 +4,12 @@ import math
 RESOLUTIONS = ["360p", "480p", "768p (native)"]
 ASPECTS = ["same as reference", "9:16", "16:9", "1:1", "4:3", "3:4", "3:2", "2:3", "21:9", "custom"]
 
+# Official H3 pixel buckets: 480p renders 832x480 / 480x832 / 640x640, native 768p
+# renders 1344x768 / 768x1344 / 992x992. Each preset keeps a constant pixel budget
+# for EVERY aspect ratio. 360p keeps its historical 640x352 budget.
+AREA_BUDGETS = {"360p": 640 * 352, "480p": 832 * 480, "768p (native)": 768 * 1344}
+_NATIVE_SQUARE = 992  # official square bucket; the raw sqrt rounds to 1024 instead
+
 
 def canvas(resolution, aspect_ratio, reference_width, reference_height, custom_aspect="16:9"):
     if resolution not in RESOLUTIONS:
@@ -18,13 +24,15 @@ def canvas(resolution, aspect_ratio, reference_width, reference_height, custom_a
             raise ValueError("Custom aspect ratio must be width:height, for example 5:4") from None
     if not all(math.isfinite(x) and x > 0 for x in (w, h)) or not 0.1 <= w / h <= 10:
         raise ValueError("Aspect ratio must be positive and between 1:10 and 10:1")
-    short = {"360p": 352, "480p": 480, "768p (native)": 768}[resolution]
+    # Every preset fixes a pixel BUDGET, not a short edge, so any aspect ratio
+    # (including same-as-reference) gets the same pixel count as the official H3
+    # buckets: 480p = 832*480 (~0.4 MP, buckets 832x480 / 480x832 / 640x640),
+    # native 768p = 768*1344 (buckets 1344x768 / 768x1344 / 992x992).
+    budget = AREA_BUDGETS[resolution]
     ratio = w / h
-    nw, nh = (short * ratio, short) if ratio >= 1 else (short, short / ratio)
-    # Native H3 uses the official 768*1344 area cap. Low presets keep their short edge.
-    if resolution == "768p (native)" and nw * nh > 768 * 1344:
-        scale = math.sqrt(768 * 1344 / (nw * nh))
-        nw, nh = nw * scale, nh * scale
+    if resolution == "768p (native)" and abs(ratio - 1.0) < 1e-9:
+        return _NATIVE_SQUARE, _NATIVE_SQUARE
+    nw, nh = math.sqrt(budget * ratio), math.sqrt(budget / ratio)
     return max(32, round(nw / 32) * 32), max(32, round(nh / 32) * 32)
 
 

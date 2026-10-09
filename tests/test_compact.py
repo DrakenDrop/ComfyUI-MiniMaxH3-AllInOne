@@ -25,19 +25,35 @@ PROMPT = "\n\n".join(f"{f}:\n{body}" for f, body in zip(formats.FIELDS, (
 
 
 class CanvasTests(unittest.TestCase):
-    def test_presets_portrait_and_landscape(self):
+    def test_presets_match_official_h3_buckets(self):
         self.assertEqual(geometry.canvas("360p", "16:9", 1, 1), (640, 352))
-        self.assertEqual(geometry.canvas("480p", "9:16", 1, 1), (480, 864))
+        self.assertEqual(geometry.canvas("480p", "16:9", 1, 1), (832, 480))
+        self.assertEqual(geometry.canvas("480p", "9:16", 1, 1), (480, 832))
+        self.assertEqual(geometry.canvas("480p", "1:1", 1, 1), (640, 640))
         self.assertEqual(geometry.canvas("768p (native)", "16:9", 1, 1), (1344, 768))
+        self.assertEqual(geometry.canvas("768p (native)", "9:16", 1, 1), (768, 1344))
+        self.assertEqual(geometry.canvas("768p (native)", "1:1", 1, 1), (992, 992))
         for res in geometry.RESOLUTIONS:
             for aspect in geometry.ASPECTS:
                 w, h = geometry.canvas(res, aspect, 1920, 1080, "5:4")
                 self.assertEqual(w % 32, 0)
                 self.assertEqual(h % 32, 0)
 
+    def test_every_preset_keeps_a_constant_pixel_budget(self):
+        for res, budget in geometry.AREA_BUDGETS.items():
+            for ratio in ("1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "21:9",
+                          "5:4", "10:1", "1:10"):
+                with self.subTest(preset=res, ratio=ratio):
+                    w, h = geometry.canvas(res, "custom", 1, 1, ratio)
+                    self.assertAlmostEqual(w * h / budget, 1.0, delta=0.12,
+                                           msg=f"{res} {ratio} -> {w}x{h}")
+                    num, den = (float(x) for x in ratio.split(":"))
+                    # the 32px grid limits ratio fidelity when the short side is small
+                    self.assertAlmostEqual(w / h, num / den, delta=0.15 * num / den)
+
     def test_same_as_reference_and_custom(self):
-        self.assertEqual(geometry.canvas("480p", "same as reference", 800, 800), (480, 480))
-        self.assertEqual(geometry.canvas("480p", "custom", 1, 1, "5:4"), (608, 480))
+        self.assertEqual(geometry.canvas("480p", "same as reference", 800, 800), (640, 640))
+        self.assertEqual(geometry.canvas("480p", "custom", 1, 1, "5:4"), (704, 576))
         for ratio in ("", "16/9", "0:1", "nan:1", "-1:2", "1000:1"):
             with self.assertRaises(ValueError):
                 geometry.canvas("480p", "custom", 1, 1, ratio)
