@@ -114,8 +114,10 @@ class PromptTests(unittest.TestCase):
         self.assertIn("non_diegetic_music:\nN/A", result)
         with self.assertRaises(ValueError):
             formats.apply_policy(PROMPT.replace("Room tone.", "<Audio 1>"), silent=True)
+        # heading-less text is passed through instead of failing the run
+        self.assertEqual(formats.apply_policy("truncated result"), "truncated result")
         with self.assertRaises(ValueError):
-            formats.apply_policy("truncated result")
+            formats.apply_policy("truncated result", strict=True)
 
 
 class FakeTensor:

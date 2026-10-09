@@ -143,8 +143,13 @@ class _Pipeline:
             finally:
                 if unload_llm_after_prompt and llm_model != local_models.SERVER_DEFAULT:
                     managed_server.stop(CFG)
-        return apply_policy(prompt, first_frame=bool(unused.get("ref_image_1_as_first_frame", False)),
-                            silent=video is not None, style=minimax_prompt_style)
+        notes = []
+        final_prompt = apply_policy(prompt, first_frame=bool(unused.get("ref_image_1_as_first_frame", False)),
+                                    silent=video is not None, style=minimax_prompt_style,
+                                    on_partial=notes.append)
+        for note in notes:
+            prompter.lc.log("WARNING: " + note)
+        return final_prompt
 
     def _sample(self, model, positive, latent, video_vae, seed, steps, sampler_name, scheduler, silent=False, timer=None):
         import comfy.samplers

@@ -294,6 +294,7 @@ Discovery also applies when configured external-server `autostart` is enabled. S
 
 - `additional_system_prompt` appends user system instructions to the official-format system prompt. Node-level policies still enforce the first-frame option and V2V's audio-free prompt fields.
 - R2V only: `prompt_override` skips the LLM. Its format must match `minimax_prompt_style`: free-form text for simple, six sections for official.
+- An incomplete official-format response (e.g. truncated by `max_tokens`) does not fail the run: the node keeps whichever sections arrived, logs a `WARNING` with the missing ones, and conditions H3 with the partial prompt. Heading-less text passes through as-is; first-frame and silent policies patch only the sections that exist. The V2V prompt-repair path keeps strict validation.
 - The managed llama-server is stopped after prompting by default to release VRAM. An external server is never stopped automatically. Before prompting, GPU-resident ComfyUI models are unloaded so the external LLM can load; ComfyUI reloads models when needed.
 - V2V exposes decoded video frames, the Qwen edit, and both enhanced prompts. R2V additionally exposes its prompt, canvas size and frame count.
 - These additions do not replace or change the existing prompter, I2V, V2V or Qwen keyframe nodes.

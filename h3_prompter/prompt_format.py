@@ -14,7 +14,18 @@ def strip_fence(text):
     return text
 
 
-def _sections(prompt):
+def _warn_partial(on_partial, sections):
+    missing = [f for f in FIELDS if f not in sections]
+    if on_partial is not None and missing:
+        on_partial(f"Official MiniMax prompt incomplete: {len(sections)}/6 sections; missing: "
+                   + ", ".join(missing) + ". Continuing with the partial prompt; raise max_tokens "
+                   "or switch minimax_prompt_style to simple if this keeps happening.")
+
+
+def _sections(prompt, strict=False, on_partial=None):
+    """Parse the six official sections. Strict mode raises on any deviation; the default
+    salvages the sections that are present (a truncated response still yields a usable
+    prompt) and returns None when no section heading is recognizable at all."""
     if isinstance(prompt, str):
         prompt = strip_fence(prompt)
         if prompt.startswith("{"):
@@ -23,10 +34,15 @@ def _sections(prompt):
             except json.JSONDecodeError:
                 pass
     if isinstance(prompt, dict):
-        sections = {str(k).strip().lower().replace(" ", "_"): v for k, v in prompt.items()}
-        if set(sections) != set(FIELDS) or not all(isinstance(v, str) and v.strip() for v in sections.values()):
+        raw = {str(k).strip().lower().replace(" ", "_"): v for k, v in prompt.items()}
+        sections = {k: raw[k].strip() for k in FIELDS
+                    if k in raw and isinstance(raw[k], str) and raw[k].strip()}
+        if len(sections) == len(FIELDS):
+            return sections
+        if strict or not sections:
             raise ValueError("Official MiniMax prompt must contain six non-empty text sections: " + ", ".join(FIELDS))
-        return {k: sections[k].strip() for k in FIELDS}
+        _warn_partial(on_partial, sections)
+        return sections
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("MiniMax prompt is empty or is not text.")
     if "\n" not in prompt and "\\n" in prompt:
@@ -36,21 +52,32 @@ def _sections(prompt):
                          r")(?:\*\*|__)?[ \t]*(?::[ \t]*(?:\*\*|__)?[ \t]*|[ \t]*(?=\n|$))")
     matches = list(heading.finditer(prompt))
     names = [re.sub(r" +", "_", m.group(1).lower()) for m in matches]
+    blocks = {}
+    for i, (name, m) in enumerate(zip(names, matches)):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(prompt)
+        value = prompt[m.end():end].strip()
+        if name not in blocks and value:
+            blocks[name] = value
     if len(names) != len(FIELDS) or set(names) != set(FIELDS):
-        found = ", ".join(names) or "none"
-        missing = ", ".join(f for f in FIELDS if f not in names) or "none (duplicate headings)"
-        raise ValueError(
-            f"Official MiniMax prompt format is incomplete. Found: {found}. Missing: {missing}. "
-            "Choose minimax_prompt_style=simple for free-form text, or use official for six sections. "
-            "A larger max_tokens helps only if the response was truncated.")
-    sections = {name: prompt[m.end():matches[i + 1].start() if i + 1 < len(matches) else len(prompt)].strip()
-                for i, (name, m) in enumerate(zip(names, matches))}
-    if any(not value for value in sections.values()):
-        raise ValueError("Official MiniMax prompt contains an empty section.")
-    return sections
+        if strict:
+            found = ", ".join(names) or "none"
+            missing = ", ".join(f for f in FIELDS if f not in names) or "none (duplicate headings)"
+            raise ValueError(
+                f"Official MiniMax prompt format is incomplete. Found: {found}. Missing: {missing}. "
+                "Choose minimax_prompt_style=simple for free-form text, or use official for six sections. "
+                "A larger max_tokens helps only if the response was truncated.")
+        if not blocks:
+            return None
+        _warn_partial(on_partial, blocks)
+        return blocks
+    if len(blocks) != len(FIELDS):  # all six headings present but a section is empty
+        if strict:
+            raise ValueError("Official MiniMax prompt contains an empty section.")
+        _warn_partial(on_partial, blocks)
+    return blocks
 
 
-def apply_policy(prompt, first_frame=False, silent=False, style="official"):
+def apply_policy(prompt, first_frame=False, silent=False, style="official", strict=False, on_partial=None):
     if style not in ("simple", "official"):
         raise ValueError(f"Unknown MiniMax prompt style: {style}")
     if style == "simple":
@@ -66,26 +93,37 @@ def apply_policy(prompt, first_frame=False, silent=False, style="official"):
             text += "\nThe video begins from <Picture 1> as its first frame."
         return text
 
-    sections = _sections(prompt)
+    sections = _sections(prompt, strict=strict, on_partial=on_partial)
+    if sections is None:
+        # No recognizable section heading: pass the raw text through like simple style.
+        text = prompt if isinstance(prompt, str) else prompt_text_unchecked(prompt)
+        if silent and re.search(r"<Audio\s+\d+>|<d>", text, re.I):
+            raise ValueError("Video-only prompt contains audio/dialogue tags; remove them from system instructions or override")
+        if first_frame and "begins from <Picture 1>" not in text:
+            text += "\nThe video begins from <Picture 1> as its first frame."
+        return strip_fence(text)
     if silent:
         if re.search(r"<Audio\s+\d+>|<d>", "\n".join(sections.values()), re.I):
             raise ValueError("Video-only prompt contains audio/dialogue tags; remove them from system instructions or override")
-        sections["overall_soundscape"] = "N/A"
-        sections["non_diegetic_music"] = "N/A"
+        for field in ("overall_soundscape", "non_diegetic_music"):
+            if field in sections:
+                sections[field] = "N/A"
     if first_frame:
         definition = "<Picture 1> is the first frame of [Shot 1], defining its opening composition and appearance."
         retention = "<Picture 1> ([Shot 1] first frame): fully_preserved - the shot begins from this reference image."
         for field, line in (("subject_definitions", definition), ("retention_analysis", retention)):
+            if field not in sections:
+                continue
             if re.search(r"(?m)^<Picture 1>.*$", sections[field]):
                 sections[field] = re.sub(r"(?m)^<Picture 1>.*$", line, sections[field])
             else:
                 sections[field] += "\n" + line
-        if "keyframe completion" not in sections["summary"]:
+        if "summary" in sections and "keyframe completion" not in sections["summary"]:
             sections["summary"] = re.sub(r"^\[([^\]]+)\]", r"[keyframe completion + \1]", sections["summary"], count=1)
-        if "begins from <Picture 1>" not in sections["detailed_description"]:
+        if "detailed_description" in sections and "begins from <Picture 1>" not in sections["detailed_description"]:
             sections["detailed_description"] = sections["detailed_description"].replace(
                 "[Shot 1]", "[Shot 1] The shot begins from <Picture 1>.", 1)
-    return "\n\n".join(f"{f}:\n{sections[f]}" for f in FIELDS)
+    return "\n\n".join(f"{f}:\n{sections[f]}" for f in FIELDS if f in sections)
 
 
 class V2VPromptError(ValueError):
@@ -130,7 +168,7 @@ def parse_edit_response(content, style="official", has_reference=True, has_video
         raise ValueError("Enhancer must return qwen_prompt and minimax_prompt.")
     qwen = validate_qwen_prompt(result["qwen_prompt"], has_reference)
     try:
-        minimax = apply_policy(result["minimax_prompt"], silent=True, style=style)
+        minimax = apply_policy(result["minimax_prompt"], silent=True, style=style, strict=True)
     except ValueError as exc:
         raise V2VPromptError(str(exc)) from exc
     minimax = _normalize_h3_labels(minimax)
