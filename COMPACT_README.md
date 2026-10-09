@@ -10,6 +10,28 @@ Integrated R2V and V2V generation nodes with local llama.cpp prompting and nativ
 4. Install/extract llama.cpp `llama-server`. The node detects its executable automatically; `llama_server_path` can stay empty. Put a vision GGUF and its matching mmproj in `ComfyUI/models/LLM/`. Subfolders and split GGUF models are scanned. The model choice `(llama-server yang sudah jalan)` uses an existing server; it does not switch that server's model.
 5. The V2V examples require ComfyUI-VideoHelperSuite for the video loader. Restart ComfyUI and open one of the workflows in `example_workflows/`. Select installed model filenames in the main node; placeholder filenames in the workflows are examples.
 
+## H3 Character Swap without Qwen Image
+
+Use **MiniMax H3 Character Swap (Sample + VAE Decode)**, node type `MiniMaxH3CharacterSwap`.
+Example: [character_swap.json](example_workflows/character_swap.json).
+
+Connect VHS Load Video's **IMAGE** output to **ref_video** and Load Image's **IMAGE** output to **ref_image**. Like the official H3 reference-video input, `ref_video` is an IMAGE sequence at 24 FPS; it is not a VIDEO object. Connect the generated `images` to VHS Video Combine at 24 FPS.
+
+| Input or output | Routing |
+|---|---|
+| `ref_video` (IMAGE) | Selected source frames go directly to H3 `ref_video_0` / `<Video 1>` and the same frames go to RGB FunControlNet |
+| `ref_image` (IMAGE) | First image goes directly to H3 `ref_image_0` / `<Picture 1>` as the target character |
+| `images` (IMAGE output) | Sampled and VAE-decoded video frames |
+| `minimax_prompt` (STRING output) | The actual prompt used by H3 |
+
+Select the H3 diffusion model, H3 text encoder, video VAE and H3-compatible FunControlNet weights inside the node. FunControlNet is part of the workflow, defaults to strength 1.0 and runs over the full sampling range; strength 0 disables its application for comparisons. No Qwen image model, Qwen image encoder, Qwen image VAE, DWPose, mask or pinned first-frame guide is used. The H3 text encoder and the optional llama.cpp enhancer may themselves use Qwen-family language models; those are separate from Qwen Image generation.
+
+Describe the character swap in `instruction`; for multiple people, specify which person to replace. By default the enhancer transfers the reference identity, face, hair and outfit while requesting preservation of source performance, camera, background and lighting. Change the instruction if clothing should be preserved. The source video also contains the old character's appearance, so identity transfer and motion/lighting preservation still depend on H3 and control strength; exact movement is not guaranteed.
+
+The node supports the same resolution/aspect presets, official duration rounding, H3 LoRA, `minimax_thinking`, `additional_system_prompt`, model retention and enhancer caching. `prompt_override` bypasses llama.cpp entirely and is used verbatim. Otherwise a vision GGUF sees sampled source frames and the target character image. The returned MiniMax prompt is accepted without content validation or correction retries, including plain-text responses.
+
+No audio is decoded or returned. `strict video-only (experimental)` is the node default; `native AV (discard audio)` internally denoises audio latents as in native H3. The example selects native AV for comparison with the native sampler. Select the mode deliberately; this new node has CPU routing tests but has not been validated end-to-end on a GPU.
+
 ## Decoded IMAGE output
 
 Select **MiniMax H3 R2V Generate (Sample + VAE Decode)** or **MiniMax H3 V2V Generate (Sample + VAE Decode, Silent)** from **MiniMax H3 / All in One**.
@@ -258,7 +280,7 @@ Keep the working model, scheduler, steps and resolution for the first timing com
 
 API signatures and model filenames were checked against current official ComfyUI and Qwen sources. Workflow graph consistency is checked by `tools/check_workflows.cjs`. Unit tests cover canvas sizing, temporal sampling, first-frame prompt policy, audio-tag rejection and the zero-audio-token wrapper contract: `python -m unittest discover -s tests -v`.
 
-Python syntax checks, all 55 unit tests (including discovery, prompt-format regressions, and native/strict V2V routing), and the workflow graph checks pass. End-to-end generation has **not** been run because no ComfyUI GPU runtime is available here. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
+Python syntax checks, all 63 unit tests (including discovery, prompt-format regressions, and native/strict V2V routing), and the workflow graph checks pass. End-to-end generation has **not** been run because no ComfyUI GPU runtime is available here. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
 
 The example workflows were built using public official templates as integration references. They have not been validated through end-to-end generation.
 

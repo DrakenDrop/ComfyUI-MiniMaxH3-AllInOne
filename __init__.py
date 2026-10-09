@@ -9,15 +9,18 @@ from . import nodes_h3qwen as _h3qwen
 from . import nodes_bernini_long as _brlong
 from . import nodes_bernini_pe as _brpe
 from . import nodes_compact as _compact
+from . import nodes_character_swap as _character
 
 NODE_CLASS_MAPPINGS = {**NODE_CLASS_MAPPINGS, **_v2v.NODE_CLASS_MAPPINGS, **_i2v.NODE_CLASS_MAPPINGS,
                        **_h3qwen.NODE_CLASS_MAPPINGS, **_brlong.NODE_CLASS_MAPPINGS,
                        **_brpe.NODE_CLASS_MAPPINGS}
 NODE_CLASS_MAPPINGS.update(_compact.NODE_CLASS_MAPPINGS)
+NODE_CLASS_MAPPINGS.update(_character.NODE_CLASS_MAPPINGS)
 NODE_DISPLAY_NAME_MAPPINGS = {**NODE_DISPLAY_NAME_MAPPINGS, **_v2v.NODE_DISPLAY_NAME_MAPPINGS,
                               **_i2v.NODE_DISPLAY_NAME_MAPPINGS, **_h3qwen.NODE_DISPLAY_NAME_MAPPINGS,
                               **_brlong.NODE_DISPLAY_NAME_MAPPINGS, **_brpe.NODE_DISPLAY_NAME_MAPPINGS}
 NODE_DISPLAY_NAME_MAPPINGS.update(_compact.NODE_DISPLAY_NAME_MAPPINGS)
+NODE_DISPLAY_NAME_MAPPINGS.update(_character.NODE_DISPLAY_NAME_MAPPINGS)
 from .h3_prompter import llama_client as _lc
 
 

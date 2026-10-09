@@ -4,6 +4,7 @@ All-in-one ComfyUI nodes for **MiniMax H3 reference-to-video (R2V)** and **exper
 
 ## Features
 
+- Character swap with direct H3 video/image references and RGB FunControlNet, without Qwen Image.
 - R2V with one reference image and one reference audio clip.
 - V2V with source video frames as an IMAGE batch and an optional appearance reference image.
 - Qwen Image 2.1 editing of the source video's first frame.
@@ -38,12 +39,35 @@ Configure llama.cpp and install the required models as described below, restart 
 
 | Workflow | Inputs | Output |
 |---|---|---|
+| [H3 character swap, no Qwen Image](example_workflows/character_swap.json) | Reference video and character image | Decoded character-swapped frames |
 | [R2V image and audio](example_workflows/r2v_image_audio.json) | Reference image and audio | Video with audio |
 | [V2V pose only](example_workflows/v2v_pose_only.json) | Source video, instruction, optional reference | Skeleton-controlled silent video |
 | [V2V with appearance reference](example_workflows/v2v_qwen_pose_silent.json) | Source video and reference image | Silent edited video |
 | [V2V text edit](example_workflows/v2v_text_only_edit.json) | Source video and text instruction; reference disconnected | Decoded edited frames |
 
 R2V uses standard media loaders and Save Video. V2V uses VHS Load Video (IMAGE output), Load Image, one generation node, and VHS Video Combine or Preview Image. Model and sampler settings are configured inside the generation node.
+
+## H3 Character Swap without Qwen Image
+
+Use **MiniMax H3 Character Swap (Sample + VAE Decode)**, node type `MiniMaxH3CharacterSwap`.
+Example: [character_swap.json](example_workflows/character_swap.json).
+
+Connect VHS Load Video's **IMAGE** output to **ref_video** and Load Image's **IMAGE** output to **ref_image**. Like the official H3 reference-video input, `ref_video` is an IMAGE sequence at 24 FPS; it is not a VIDEO object. Connect the generated `images` to VHS Video Combine at 24 FPS.
+
+| Input or output | Routing |
+|---|---|
+| `ref_video` (IMAGE) | Selected source frames go directly to H3 `ref_video_0` / `<Video 1>` and the same frames go to RGB FunControlNet |
+| `ref_image` (IMAGE) | First image goes directly to H3 `ref_image_0` / `<Picture 1>` as the target character |
+| `images` (IMAGE output) | Sampled and VAE-decoded video frames |
+| `minimax_prompt` (STRING output) | The actual prompt used by H3 |
+
+Select the H3 diffusion model, H3 text encoder, video VAE and H3-compatible FunControlNet weights inside the node. FunControlNet is part of the workflow, defaults to strength 1.0 and runs over the full sampling range; strength 0 disables its application for comparisons. No Qwen image model, Qwen image encoder, Qwen image VAE, DWPose, mask or pinned first-frame guide is used. The H3 text encoder and the optional llama.cpp enhancer may themselves use Qwen-family language models; those are separate from Qwen Image generation.
+
+Describe the character swap in `instruction`; for multiple people, specify which person to replace. By default the enhancer transfers the reference identity, face, hair and outfit while requesting preservation of source performance, camera, background and lighting. Change the instruction if clothing should be preserved. The source video also contains the old character's appearance, so identity transfer and motion/lighting preservation still depend on H3 and control strength; exact movement is not guaranteed.
+
+The node supports the same resolution/aspect presets, official duration rounding, H3 LoRA, `minimax_thinking`, `additional_system_prompt`, model retention and enhancer caching. `prompt_override` bypasses llama.cpp entirely and is used verbatim. Otherwise a vision GGUF sees sampled source frames and the target character image. The returned MiniMax prompt is accepted without content validation or correction retries, including plain-text responses.
+
+No audio is decoded or returned. `strict video-only (experimental)` is the node default; `native AV (discard audio)` internally denoises audio latents as in native H3. The example selects native AV for comparison with the native sampler. Select the mode deliberately; this new node has CPU routing tests but has not been validated end-to-end on a GPU.
 
 ## Requirements and configuration
 
@@ -301,7 +325,7 @@ Keep the working model, scheduler, steps and resolution for the first timing com
 
 API signatures and model filenames were checked against current official ComfyUI and Qwen sources. Workflow graph consistency is checked by `tools/check_workflows.cjs`. Unit tests cover canvas sizing, temporal sampling, first-frame prompt policy, audio-tag rejection and the zero-audio-token wrapper contract: `python -m unittest discover -s tests -v`.
 
-Python syntax checks, all 55 unit tests (including discovery, prompt-format regressions, and native/strict V2V routing), and the workflow graph checks pass. End-to-end generation has **not** been run because no ComfyUI GPU runtime is available here. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
+Python syntax checks, all 63 unit tests (including discovery, prompt-format regressions, and native/strict V2V routing), and the workflow graph checks pass. End-to-end generation has **not** been run because no ComfyUI GPU runtime is available here. In particular, video-only denoising must be tested on your installed H3 model and ComfyUI version before treating it as stable. It changes H3's usual joint audio/video inference and may affect visual quality or encounter backend/quantization incompatibilities. It has no silent fallback to normal audio generation.
 
 The example workflows were built using public official templates as integration references. They have not been validated through end-to-end generation.
 

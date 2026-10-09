@@ -48,6 +48,16 @@ for (const file of fs.readdirSync(path.join(root, 'example_workflows')).filter(f
     assert(pipeline.inputs.find(i => i.name === 'source_video').link != null, 'source video must be connected');
     assert.equal(pipeline.inputs.find(i => i.name === 'ref_image').shape, 7, 'reference input is optional');
     assert(!graph.nodes.some(n => /Audio|Sampler|Loader|Components/.test(n.type)));
+  } else if (pipeline.type === 'MiniMaxH3CharacterSwap') {
+    assert.deepEqual(pipeline.outputs.map(o => [o.name, o.type]), [['images', 'IMAGE'], ['minimax_prompt', 'STRING']]);
+    assert.deepEqual(pipeline.inputs.map(i => [i.name, i.type]), [['ref_video', 'IMAGE'], ['ref_image', 'IMAGE']]);
+    assert(!Object.keys(pipeline.widgets_values_named).some(k => k.startsWith('qwen_')));
+    assert(!('motion_control' in pipeline.widgets_values_named));
+    assert(pipeline.widgets_values_named.fun_controlnet);
+    const combine = graph.nodes.find(n => n.type === 'VHS_VideoCombine');
+    assert.equal(combine.widgets_values_named.frame_rate, 24);
+    assert.equal(combine.inputs.find(i => i.name === 'audio').link, null);
+    assert.equal(graph.nodes.find(n => n.type === 'VHS_LoadVideo').widgets_values_named.force_rate, 24);
   } else {
     assert.equal(pipeline.outputs[1].type, 'VIDEO');
     assert(pipeline.inputs.some(i => i.name === 'ref_audio' && i.type === 'AUDIO'));
