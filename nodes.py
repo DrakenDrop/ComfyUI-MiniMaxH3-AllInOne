@@ -453,6 +453,18 @@ class MiniMaxH3R2VPrompter:
         t0 = time.time()
         content, reasoning, timings = self._run(
             server_url, base, system, user, thinking, timeout, print_tokens, on_token, prefill=prefill)
+        if timings.get("truncated"):
+            # the server stopped at max_tokens: the prompt is cut mid-way. One retry
+            # with a doubled budget (the shared prefix is KV-cached, so it is cheap).
+            bigger = min(int(base["max_tokens"]) * 2, 32768)
+            lc.log(f"the enhancer hit max_tokens ({base['max_tokens']}) before finishing "
+                   f"-> retrying once with {bigger}.")
+            base["max_tokens"] = bigger
+            content, reasoning, timings = self._run(
+                server_url, base, system, user, thinking, timeout, print_tokens, on_token, prefill=prefill)
+            if timings.get("truncated"):
+                lc.log(f"WARNING: the enhancer is still truncated at {base['max_tokens']} tokens; "
+                       "continuing with whatever was completed.")
 
         if simple:
             prompt = prompts.clean_simple(content)

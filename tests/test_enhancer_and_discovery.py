@@ -19,6 +19,7 @@ def load(name, filename):
 
 fmt = load("format_under_test", "prompt_format.py")
 discovery = load("discovery_under_test", "server_discovery.py")
+lc = load("llama_under_test", "llama_client.py")
 SECTIONS = dict(zip(fmt.FIELDS, (
     "<Video 1> is the source. <Picture 1> is the Qwen-edited appearance reference.",
     "[video editing] Change the outfit.",
@@ -245,6 +246,59 @@ class DiscoveryTests(unittest.TestCase):
         self.binary("unrelated/deep/llama.cpp/build/bin")
         with self.assertRaises(FileNotFoundError):
             discovery.discover({}, str(self.root))
+
+
+class _FakeSSE:
+    def __init__(self, chunks):
+        self.lines = [("data: " + json.dumps(c)).encode() for c in chunks] + [b"data: [DONE]"]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def __iter__(self):
+        return iter(self.lines)
+
+
+class StreamTruncationTests(unittest.TestCase):
+    """stream_chat must report why the server stopped so callers can retry a cut prompt."""
+
+    def _stream(self, finish_reason=None, stop_type=None):
+        final = {"delta": {}}
+        if finish_reason:
+            final["finish_reason"] = finish_reason
+        if stop_type:
+            final["stop_type"] = stop_type
+        chunks = [
+            {"choices": [{"delta": {"content": "hello"}}]},
+            {"choices": [final]},
+            {"timings": {"prompt_n": 5}, "choices": []},
+        ]
+        with patch.object(lc.urllib.request, "urlopen", return_value=_FakeSSE(chunks)):
+            return lc.stream_chat("http://x", {"messages": []})
+
+    def test_openai_length_reason_flags_truncation(self):
+        content, _, timings = self._stream(finish_reason="length")
+        self.assertEqual(content, "hello")
+        self.assertTrue(timings["truncated"])
+        self.assertEqual(timings["finish_reason"], "length")
+
+    def test_normal_stop_is_not_truncated(self):
+        content, _, timings = self._stream(finish_reason="stop")
+        self.assertFalse(timings["truncated"])
+        self.assertEqual(timings["finish_reason"], "stop")
+
+    def test_native_out_of_tokens_stop_type_flags_truncation(self):
+        content, _, timings = self._stream(stop_type="out_of_tokens")
+        self.assertTrue(timings["truncated"])
+        self.assertEqual(timings["stop_type"], "out_of_tokens")
+
+    def test_clean_stream_has_empty_flags(self):
+        _, _, timings = self._stream()
+        self.assertFalse(timings["truncated"])
+        self.assertEqual(timings["finish_reason"], "")
 
 if __name__ == "__main__":
     unittest.main()

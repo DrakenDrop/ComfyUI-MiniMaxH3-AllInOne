@@ -173,6 +173,7 @@ def stream_chat(
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
     timings: dict = {}
+    finish_reason, stop_type = "", ""
     try:
         resp = urllib.request.urlopen(req, timeout=timeout)
     except urllib.error.HTTPError as exc:
@@ -203,6 +204,10 @@ def stream_chat(
             if obj.get("timings"):
                 timings = obj["timings"]
             for choice in obj.get("choices") or []:
+                if choice.get("finish_reason"):
+                    finish_reason = choice["finish_reason"]
+                if choice.get("stop_type"):
+                    stop_type = choice["stop_type"]
                 delta = choice.get("delta") or {}
                 r = delta.get("reasoning_content")
                 c = delta.get("content")
@@ -241,5 +246,9 @@ def stream_chat(
         # unfinished reasoning -> no usable answer
         reasoning = (reasoning + "\n" + content.replace(_THINK_OPEN, "")).strip()
         content = ""
+    timings = dict(timings)
+    timings["finish_reason"] = finish_reason
+    timings["stop_type"] = stop_type
+    timings["truncated"] = finish_reason == "length" or stop_type in ("out_of_tokens", "max_tokens")
     return content.strip(), reasoning.strip(), timings
 
