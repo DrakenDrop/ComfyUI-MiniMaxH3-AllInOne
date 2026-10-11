@@ -27,7 +27,8 @@ class Tensor:
         return self.label
 
 class V2VRoutingTests(unittest.TestCase):
-    def run_mode(self, mode, has_reference=True, motion_control="rgb source (legacy)"):
+    def run_mode(self, mode, has_reference=True, motion_control="rgb source (legacy)",
+                 use_qwen=True, use_control=True):
         source, target = Tensor("source"), Tensor("target", 1)
         edited = Tensor("qwen", 1, 1024, 1024)
         conditioning = Mock(return_value=("positive", "latent"))
@@ -77,15 +78,31 @@ class V2VRoutingTests(unittest.TestCase):
             self.assertNotIn("ref_image", schema["required"])
             self.assertIn("ref_image", schema["optional"])
             self.assertIn("source_video", schema["required"])
+            self.assertEqual(schema["optional"]["use_qwen_edit"][1]["default"], True)
+            self.assertEqual(schema["optional"]["apply_fun_controlnet"][1]["default"], True)
             result = node.generate(
                 source, "fun", "qwen-model", "qwen-clip", "qwen-vae", "custom",
                 **({"ref_image": target} if has_reference else {}),
                 h3_sampling_mode=mode, motion_control=motion_control, reuse_preprocessing=False, instruction="change clothes", resolution="768p (native)",
                 aspect_ratio="same as reference", custom_aspect="16:9", seed=1, steps=2,
-                sampler_name="res_multistep", scheduler="simple")
-        self.assertEqual(conditioning.call_args.kwargs["ref_images"], {"ref_image_0": edited})
+                sampler_name="res_multistep", scheduler="simple",
+                use_qwen_edit=use_qwen, apply_fun_controlnet=use_control)
+        picture = edited if use_qwen else (target if has_reference else source[:1])
+        sent_images = conditioning.call_args.kwargs["ref_images"]
+        if use_qwen or has_reference:
+            self.assertEqual(list(sent_images), ["ref_image_0"])
+            # ref_image is sliced [:1] before being sent, so compare by label, not identity
+            self.assertEqual(sent_images["ref_image_0"].label, picture.label)
+        else:
+            self.assertEqual(sent_images, {})
         self.assertIsNone(conditioning.call_args.kwargs["audio_vae"])
-        if motion_control == "pose only (DWPose)":
+        if not use_control:
+            # control off: no Fun ControlNet, no pose extraction, source always a <Video 1> reference
+            control.assert_not_called()
+            pose.require_dwpose.assert_not_called()
+            pose.extract_pose.assert_not_called()
+            self.assertEqual(conditioning.call_args.kwargs["ref_videos"]["ref_video_0"].label, "source")
+        elif motion_control == "pose only (DWPose)":
             self.assertIsNone(conditioning.call_args.kwargs["ref_videos"])
             self.assertEqual(control.call_args.kwargs["control_video"].label, "pose")
             pose.require_dwpose.assert_called_once()
@@ -95,13 +112,21 @@ class V2VRoutingTests(unittest.TestCase):
             self.assertEqual(control.call_args.kwargs["control_video"].label, "source")
             pose.require_dwpose.assert_not_called()
             pose.extract_pose.assert_not_called()
-        self.assertNotIn("mask", control.call_args.kwargs)
-        self.assertNotIn("source_video", control.call_args.kwargs)
+        if use_control:
+            self.assertNotIn("mask", control.call_args.kwargs)
+            self.assertNotIn("source_video", control.call_args.kwargs)
         self.assertEqual(node._enhance_edit.call_args.kwargs["motion_control"], motion_control)
+        self.assertEqual(node._enhance_edit.call_args.kwargs["use_qwen_edit"], use_qwen)
         self.assertEqual(node.sample_args[5:8], (2, "res_multistep", "simple"))
-        self.assertIs(result[1], edited)
+        if use_qwen:
+            self.assertIs(result[1], picture)
+        else:
+            self.assertEqual(result[1].label, picture.label)
         self.assertEqual(result[2:], ("H3 prompt", "qwen prompt"))
-        self.assertEqual([t.label for t in qwen.call_args.args[4]], ["source", "target"] if has_reference else ["source"])
+        if use_qwen:
+            self.assertEqual([t.label for t in qwen.call_args.args[4]], ["source", "target"] if has_reference else ["source"])
+        else:
+            qwen.assert_not_called()
         return node, wrapper
 
     def test_native_matches_reference_routing_without_audio_wrapper(self):
@@ -124,6 +149,54 @@ class V2VRoutingTests(unittest.TestCase):
         wrapper.assert_called_once_with("controlled-model")
         self.assertTrue(node.sample_kw["silent"])
         self.assertEqual(node.sample_args[0], "strict-model")
+
+    def test_no_qwen_pose_mode_is_motion_transfer_from_reference(self):
+        for mode in ("native AV (discard audio)", "strict video-only (experimental)"):
+            node, wrapper = self.run_mode(mode, motion_control="pose only (DWPose)", use_qwen=False)
+            # ref_image is sent to H3 as-is; skeletons drive the motion; no Qwen load
+
+    def test_no_qwen_pose_without_reference_is_rejected(self):
+        pose = types.SimpleNamespace(require_dwpose=Mock(), extract_pose=Mock())
+        modules = {
+            "comfy": types.ModuleType("comfy"),
+            "comfy.samplers": types.SimpleNamespace(SCHEDULER_NAMES=["simple"]),
+            "torch": types.SimpleNamespace(tensor=lambda value, **kw: value, long=object()),
+            "nodes": types.SimpleNamespace(),
+            "folder_paths": types.SimpleNamespace(),
+            "comfy_extras": types.SimpleNamespace(nodes_minimax_h3=types.SimpleNamespace()),
+            "routing_pkg.h3_prompter": types.SimpleNamespace(llama_client=types.SimpleNamespace(log=lambda msg: None)),
+        }
+        class Pipeline:
+            def _load(self, kind, name):
+                return kind
+            def _base_models(self, **kw):
+                return "m", "c", "v"
+            def _sample(self, *a, **kw):
+                return None, None
+        tree = ast.parse(SOURCE.read_text())
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "MiniMaxH3V2VGenerate")
+        ns = dict(__name__="routing_pkg.nodes_compact", __package__="routing_pkg", _Pipeline=Pipeline,
+                  CATEGORY="t", NONE="(none)", perf=perf, pose_control=pose,
+                  prompter=types.SimpleNamespace(THINKING=["off"]), common_inputs=lambda: {}, extra_inputs=lambda: {},
+                  choices=lambda *a, **kw: [], args=lambda o: o, patch_video_only=Mock(),
+                  geometry=types.SimpleNamespace(video_timeline=lambda *a: (22, list(range(22))), canvas=lambda *a: (1, 1)),
+                  v2v=types.SimpleNamespace(resize_frames=lambda image, *a: image))
+        exec(compile(ast.Module(body=[cls], type_ignores=[]), str(SOURCE), "exec"), ns)
+        node = ns["MiniMaxH3V2VGenerate"]()
+        with patch.dict(sys.modules, modules), self.assertRaisesRegex(ValueError, "ref_image"):
+            node.generate(Tensor("source"), "fun", "q", "qc", "qv", "custom",
+                          h3_sampling_mode="native AV (discard audio)", motion_control="pose only (DWPose)",
+                          reuse_preprocessing=False, instruction="move like this",
+                          use_qwen_edit=False, apply_fun_controlnet=True,
+                          resolution="768p (native)", aspect_ratio="same as reference", custom_aspect="16:9",
+                          seed=1, steps=2, sampler_name="res_multistep", scheduler="simple")
+
+    def test_control_off_sends_source_as_plain_video_reference(self):
+        for use_qwen in (True, False):
+            for has_reference in (True, False):
+                with self.subTest(use_qwen=use_qwen, has_reference=has_reference):
+                    self.run_mode("native AV (discard audio)", has_reference=has_reference,
+                                  use_qwen=use_qwen, use_control=False)
 
 if __name__ == "__main__":
     unittest.main()

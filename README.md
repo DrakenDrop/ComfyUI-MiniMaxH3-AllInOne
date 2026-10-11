@@ -276,6 +276,23 @@ Install [comfyui_controlnet_aux](https://github.com/Fannovel16/comfyui_controlne
 
 `motion_control = rgb source (legacy)` retains the earlier source-RGB control and H3 reference-video path. Existing comparison examples explicitly select this mode. For the new path, open [V2V pose only](example_workflows/v2v_pose_only.json) or select `pose only (DWPose)` on your current node. This example uses native AV sampling with discarded audio; that mode still computes audio latents internally.
 
+### Direct modes: no Qwen, and Fun ControlNet on/off
+
+Two V2V widgets change the pipeline shape:
+
+- **`use_qwen_edit`** (default on). Off = the Qwen Image 2.1 stage is skipped entirely: no Qwen model load, no first-frame edit, no `qwen_prompt`. What H3 receives as `<Picture 1>` is `ref_image` exactly as supplied.
+- **`apply_fun_controlnet`** (default on). Off = the Fun ControlNet patch is not loaded or applied.
+
+Combinations:
+
+| Setup | Result |
+|---|---|
+| No Qwen + pose-only + control on | **Motion transfer**: `ref_image` (required) becomes `<Picture 1>`; DWPose skeletons from the source drive body/hand/face motion; no `<Video N>` reference. |
+| No Qwen + control off | **Prompt-driven video edit**: the source RGB video is sent as a plain `<Video 1>` reference and the prompt alone describes the change and its timing (e.g. "at second 6 she stands up"). `ref_image` is an optional additional `<Picture 1>` appearance reference. |
+| Qwen on + control off | Qwen edits frame 0 as usual, but nothing constrains motion: H3 animates from the prompt, `<Video 1>` still supplied in legacy mode. |
+
+In no-Qwen modes the enhancer uses dedicated direct system prompts (motion transfer or prompt edit) and returns only the MiniMax prompt; the `qwen_image` output then carries the reference that was actually sent to H3 (or the source first frame when none). All other settings (silent sampling, timeline, caching, thinking) behave as before.
+
 ## Resolution and aspect ratio
 
 Presets: 360p, 480p, native 768p. All canvases use multiples of 32. Each preset fixes a pixel **budget** that stays constant for every aspect ratio (including `same as reference`), matching the official H3 buckets. Extreme ratios trade side lengths inside the same budget instead of shrinking or inflating the canvas.
