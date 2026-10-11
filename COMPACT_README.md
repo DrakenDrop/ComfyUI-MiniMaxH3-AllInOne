@@ -87,6 +87,8 @@ Select **MiniMax H3 R2V FastH3 Generate (Experimental)**, or load [the example w
 
 This is a separate node (`MiniMaxH3R2VFastH3Generate`) that inherits R2V generation. It retains `MiniMaxH3ReferenceToVideo` conditioning, consecutive reference labels, the first-image-only frame guide, instruction-based audio-to-subject mapping, and exact reuse of only the first audio. Existing R2V workflows and defaults stay unchanged.
 
+A sibling variant, **MiniMax H3 V2V FastH3 Generate (Experimental)** (`MiniMaxH3V2VFastH3Generate`), applies the same patch chain to the V2V pipeline: it inherits the full V2V feature set (optional Qwen first-frame edit, DWPose pose control or legacy RGB, the no-Qwen direct modes and the Fun ControlNet toggle), and the patches are applied to the H3 model before the Fun ControlNet and scheduler: `load (+ LoRA) -> Sigma Shift -> Attention Backend -> VSA -> Fun ControlNet -> strict video-only wrapper -> sampler`. Add the node to an existing V2V workflow to try it.
+
 Only the model patch chain is adapted from the supplied `video_fastvideo_fasth3_i2v.json` example:
 
 `Load Model (+ optional LoRA) -> MiniMaxH3SigmaShift -> ModelAttentionBackend -> BlockSparseAttention -> BasicGuider AND BasicScheduler`

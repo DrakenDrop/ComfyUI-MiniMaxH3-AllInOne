@@ -26,9 +26,14 @@ class Tensor:
     def __repr__(self):
         return self.label
 
+class Model:
+    def __init__(self, history=()):
+        self.history = history
+
+
 class V2VRoutingTests(unittest.TestCase):
     def run_mode(self, mode, has_reference=True, motion_control="rgb source (legacy)",
-                 use_qwen=True, use_control=True):
+                 use_qwen=True, use_control=True, fasth3=False):
         source, target = Tensor("source"), Tensor("target", 1)
         edited = Tensor("qwen", 1, 1024, 1024)
         conditioning = Mock(return_value=("positive", "latent"))
@@ -39,10 +44,7 @@ class V2VRoutingTests(unittest.TestCase):
         h3 = types.SimpleNamespace(
             MiniMaxH3ReferenceToVideo=types.SimpleNamespace(execute=conditioning),
             MiniMaxH3FunControlNetApply=types.SimpleNamespace(execute=control))
-        comfy = types.ModuleType("comfy")
-        comfy.samplers = types.SimpleNamespace(SCHEDULER_NAMES=["simple"])
         modules = {
-            "comfy": comfy, "comfy.samplers": comfy.samplers,
             "torch": types.SimpleNamespace(tensor=lambda value, **kw: value, long=object()),
             "nodes": types.SimpleNamespace(),
             "folder_paths": types.SimpleNamespace(),
@@ -51,11 +53,28 @@ class V2VRoutingTests(unittest.TestCase):
                 MiniMaxH3QwenKeyframeEdit=types.SimpleNamespace(_qwen_edit=qwen)),
             "routing_pkg.h3_prompter": types.SimpleNamespace(llama_client=types.SimpleNamespace(log=lambda msg: None)),
         }
+        self._control, self._conditioning = control, conditioning
+        comfy = types.ModuleType("comfy")
+        comfy.samplers = types.SimpleNamespace(SCHEDULER_NAMES=["simple"])
+        modules["comfy"] = comfy
+        modules["comfy.samplers"] = comfy.samplers
+        if fasth3:
+            def output(name):
+                return lambda model, **kw: types.SimpleNamespace(args=(Model(model.history + (name,)),))
+            self.shift = Mock(side_effect=output("shift"))
+            self.backend = Mock(side_effect=output("backend"))
+            self.sparse = Mock(side_effect=output("vsa"))
+            h3.MiniMaxH3SigmaShift = types.SimpleNamespace(execute=self.shift)
+            modules["comfy_extras.nodes_minimax_h3"] = h3
+            modules["comfy_extras.nodes_model_advanced"] = types.SimpleNamespace(
+                ModelAttentionBackend=types.SimpleNamespace(execute=self.backend))
+            modules["comfy_extras.nodes_sparse_attention"] = types.SimpleNamespace(
+                BlockSparseAttention=types.SimpleNamespace(execute=self.sparse))
         class Pipeline:
             def _load(self, kind, name):
                 return kind + ":" + name
             def _base_models(self, **kw):
-                return "h3-model", "h3-clip", "h3-vae"
+                return Model(("loaded",)), "h3-clip", "h3-vae"
             def _sample(self, *args, **kw):
                 self.sample_args, self.sample_kw = args, kw
                 return source, "sampled"
@@ -71,7 +90,18 @@ class V2VRoutingTests(unittest.TestCase):
                              canvas=lambda *a: (768, 1344)),
                          v2v=types.SimpleNamespace(resize_frames=lambda image, *a: image))
         exec(compile(ast.Module(body=[cls], type_ignores=[]), str(SOURCE), "exec"), namespace)
-        node = namespace["MiniMaxH3V2VGenerate"]()
+        if fasth3:
+            fast_src = SOURCE.parent / "nodes_fasth3.py"
+            fast_tree = ast.parse(fast_src.read_text())
+            fast_ns = dict(MiniMaxH3R2VGenerate=type("MiniMaxH3R2VGenerate", (), {}),
+                           MiniMaxH3V2VGenerate=namespace["MiniMaxH3V2VGenerate"],
+                           args=lambda out: out.args if hasattr(out, "args") else out,
+                           choices=lambda *a, **k: ["fasth3", "ref2va"])
+            exec(compile(ast.Module(body=[n for n in fast_tree.body if not isinstance(n, ast.ImportFrom)],
+                                    type_ignores=[]), str(fast_src), "exec"), fast_ns)
+            node = fast_ns["MiniMaxH3V2VFastH3Generate"]()
+        else:
+            node = namespace["MiniMaxH3V2VGenerate"]()
         node._enhance_edit = Mock(return_value=("qwen prompt", "H3 prompt"))
         with patch.dict(sys.modules, modules):
             schema = node.INPUT_TYPES()
@@ -80,6 +110,12 @@ class V2VRoutingTests(unittest.TestCase):
             self.assertIn("source_video", schema["required"])
             self.assertEqual(schema["optional"]["use_qwen_edit"][1]["default"], True)
             self.assertEqual(schema["optional"]["apply_fun_controlnet"][1]["default"], True)
+            if fasth3:
+                self.assertEqual(schema["required"]["steps"][1]["default"], 8)
+                self.assertEqual(schema["required"]["scheduler"][1]["default"], "simple")
+                self.assertEqual(schema["required"]["h3_model"][0][0], "fasth3")
+                self.assertIn("vsa_keep_percent", schema["optional"])
+                self.assertIn("use_qwen_edit", schema["optional"])  # direct modes inherited
             result = node.generate(
                 source, "fun", "qwen-model", "qwen-clip", "qwen-vae", "custom",
                 **({"ref_image": target} if has_reference else {}),
@@ -197,6 +233,25 @@ class V2VRoutingTests(unittest.TestCase):
                 with self.subTest(use_qwen=use_qwen, has_reference=has_reference):
                     self.run_mode("native AV (discard audio)", has_reference=has_reference,
                                   use_qwen=use_qwen, use_control=False)
+
+    def test_fasth3_variant_patches_model_before_controlnet_and_sampler(self):
+        for use_control in (True, False):
+            with self.subTest(use_control=use_control):
+                node, wrapper = self.run_mode("strict video-only (experimental)",
+                                              use_control=use_control, fasth3=True)
+                self.assertEqual(self.shift.call_count, 1)
+                self.assertEqual(self.backend.call_args.kwargs["model"].history, ("loaded", "shift"))
+                self.assertEqual(self.sparse.call_args.kwargs["model"].history, ("loaded", "shift", "backend"))
+                self.assertIn("vsa", self.sparse.call_args.kwargs["selection"]["selection"])
+                # strict mode wraps after the controlnet: the sampler sees the wrapper output
+                self.assertEqual(node.sample_args[0], "strict-model")
+                if use_control:
+                    self.assertEqual(self._control.call_args.kwargs["model"].history,
+                                     ("loaded", "shift", "backend", "vsa"))
+                    self.assertEqual(wrapper.call_args.args[0], "controlled-model")
+                else:
+                    self.assertEqual(wrapper.call_args.args[0].history,
+                                     ("loaded", "shift", "backend", "vsa"))
 
 if __name__ == "__main__":
     unittest.main()

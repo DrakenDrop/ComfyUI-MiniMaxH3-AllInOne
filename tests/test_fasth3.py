@@ -24,7 +24,9 @@ class FastH3Tests(routing.R2VRoutingTests):
         source = routing.ROOT / "nodes_fasth3.py"
         tree = ast.parse(source.read_text(encoding="utf-8"))
         # Execute the module except its relative import, using the actual R2V class.
+        # The V2V base is a definition-time placeholder; its behavior is covered by test_v2v_routing.
         ns = dict(MiniMaxH3R2VGenerate=base,
+                  MiniMaxH3V2VGenerate=type("MiniMaxH3V2VGenerate", (), {}),
                   args=lambda out: out.args if hasattr(out, "args") else out,
                   choices=lambda *a: ["fasth3", "ref2va"])
         exec(compile(ast.Module(body=[n for n in tree.body if not isinstance(n, ast.ImportFrom)],
@@ -134,3 +136,9 @@ class FastH3Tests(routing.R2VRoutingTests):
         self.assertIs(self.node.generate.__func__, self.base.generate)
         self.assertIs(self.registration["NODE_CLASS_MAPPINGS"]["MiniMaxH3R2VFastH3Generate"], self.node.__class__)
         self.assertIn("Experimental", self.registration["NODE_DISPLAY_NAME_MAPPINGS"]["MiniMaxH3R2VFastH3Generate"])
+
+    def test_v2v_fasth3_variant_is_registered(self):
+        self.assertIn("MiniMaxH3V2VFastH3Generate", self.registration["NODE_CLASS_MAPPINGS"])
+        self.assertIn("Experimental",
+                      self.registration["NODE_DISPLAY_NAME_MAPPINGS"]["MiniMaxH3V2VFastH3Generate"])
+        self.assertIn("V2V", self.registration["NODE_DISPLAY_NAME_MAPPINGS"]["MiniMaxH3V2VFastH3Generate"])
