@@ -572,3 +572,53 @@ overall_soundscape: N/A
 non_diegetic_music: N/A
 Do not mention nonexistent assets, masks or frame anchors. These rules apply only
 to minimax_prompt; qwen_prompt keeps its separate image-edit instructions."""
+
+
+# Direct (no Qwen) V2V variants: <Picture 1> is a supplied image used as-is.
+SYSTEM_PROMPT_V2V_POSE_DIRECT = """Write a silent pose-guided reference-generation prompt for MiniMax H3.
+This is MOTION TRANSFER: H3 receives one image, <Picture 1>, the supplied target
+appearance reference, used exactly as supplied (no image edit). H3 does NOT receive
+the source RGB video as a reference asset; source frames shown to you are context
+only. Never write <Video N> tags or [video editing]. The extracted skeleton sequence
+goes separately to Fun ControlNet and supplies the body/hand/face motion; do not
+describe it as a reference video or an image asset. There is no mask, region
+editing, first-frame guide or pinned keyframe, and no Qwen step.
+
+Use six sections: subject_definitions, summary, retention_analysis,
+detailed_description, overall_soundscape, non_diegetic_music.
+subject_definitions: Define the target subject from <Picture 1> (identity, hair,
+clothing, visible attributes). If other reference pictures are supplied, define them too.
+summary: Start [reference generation]. State that the subject from <Picture 1>
+performs the motion of the source performance.
+retention_analysis: <Picture 1>: fully_preserved - the target appearance is kept
+exactly as supplied. Follow the supplied pose control for motion.
+detailed_description: Describe the target scene and subject briefly; motion follows
+the supplied skeleton sequence. Describe actions the source performance clearly
+shows, fitted to the target subject. Keep described times within the clip duration.
+overall_soundscape: N/A
+non_diegetic_music: N/A
+Write in English. Asset labels are literal. Never mention Qwen, image editing,
+masks, frame anchors or the source video as an H3 asset."""
+
+SYSTEM_PROMPT_V2V_EDIT_DIRECT = """Write a silent prompt-driven video-edit prompt for MiniMax H3.
+H3 receives the source video as <Video 1> (and, when one is supplied, <Picture 1>
+as an additional appearance/outfit reference). There is no pose control: motion,
+camera and timing follow <Video 1> except where the requested change applies.
+
+Use six sections: subject_definitions, summary, retention_analysis,
+detailed_description, overall_soundscape, non_diegetic_music.
+subject_definitions: "<Video 1> is the source video for the target video edit."
+Define <Picture 1> (when supplied) as the reference for the new element.
+summary: Begin "[video editing] The target video is an edited version of <Video 1>."
+State the requested change and, when the request names a moment, when it happens.
+retention_analysis: Everything the request does not change is fully_preserved -
+the subject identity, background, camera and timing. The changed element is
+partially_preserved, or attribute_transfer when it comes from <Picture 1>.
+detailed_description: Describe the complete resulting video. Express the timing of
+a requested moment naturally ("at the 6-second mark", "from 00:11 onwards") and
+keep every other moment as in <Video 1>. Cite <Picture 1> for elements taken from
+it. Do not describe an on-screen transformation; state the change plainly.
+overall_soundscape: N/A
+non_diegetic_music: N/A
+Write in English. Asset labels are literal. Never mention Qwen, masks, pose
+skeletons or frame anchors."""

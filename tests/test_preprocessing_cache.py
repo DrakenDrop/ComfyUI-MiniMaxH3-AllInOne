@@ -95,6 +95,42 @@ class PreprocessingTests(unittest.TestCase):
         kwargs.update(changes)
         return self.node._enhance_edit(**kwargs)
 
+    def test_no_qwen_mode_builds_direct_system_and_returns_empty_qwen_prompt(self):
+        direct = json.dumps({"minimax_prompt": "The subject from <Picture 1> performs the source motion."})
+
+        def rebuild():
+            self.request = Mock(return_value=(direct, None, None))
+            loader = self.loader
+
+            class Pipeline:
+                def _load(self, kind, name):
+                    return loader(kind, name)
+
+            tree = ast.parse((ROOT / "nodes_compact.py").read_text())
+            cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "MiniMaxH3V2VGenerate")
+            namespace = dict(__name__="speed_pkg.nodes_compact", __package__="speed_pkg",
+                             _Pipeline=Pipeline, CATEGORY="test", NONE="(none)", os=os, json=json, perf=perf,
+                             prompt_field_unchecked=fmt.prompt_field_unchecked,
+                             parse_edit_response_unchecked=fmt.parse_edit_response_unchecked,
+                             CFG={"server_url": "http://local"}, local_models=types.SimpleNamespace(resolve=self.resolve),
+                             managed_server=self.server, parse_edit_response_with_repair=fmt.parse_edit_response_with_repair,
+                             prompter=types.SimpleNamespace(THINKING=["off", "low", "medium", "xhigh"],
+                                                            MiniMaxH3R2VPrompter=types.SimpleNamespace(_run=self.request)))
+            exec(compile(ast.Module(body=[cls], type_ignores=[]), "nodes_compact.py", "exec"), namespace)
+            return namespace["MiniMaxH3V2VGenerate"]()
+
+        for motion_control, marker in (
+                ("pose only (DWPose)", "MOTION TRANSFER"),
+                ("rgb source (legacy)", "<Video 1> is the source video")):
+            with self.subTest(motion_control=motion_control):
+                self.node = rebuild()
+                qwen, minimax = self.enhance(use_qwen_edit=False, motion_control=motion_control)
+                self.assertEqual(qwen, "")
+                self.assertIn("performs the source motion", minimax)
+                system = self.request.call_args.args[2]["content"]
+                self.assertIn("exactly one field: minimax_prompt", system)
+                self.assertIn(marker, system)
+
     def test_qwen_hit_skips_loaders_and_returns_isolated_cpu_copy(self):
         first = self.edit()
         first.fill_(0.9)
