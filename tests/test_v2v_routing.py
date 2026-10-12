@@ -37,7 +37,7 @@ class Model:
 class V2VRoutingTests(unittest.TestCase):
     def run_mode(self, mode, has_reference=True, motion_control="rgb source (legacy)",
                  use_qwen=True, use_control=True, fasth3=False, override="", qwen_override="",
-                 instruction="change clothes", expect_error=None):
+                 instruction="change clothes", expect_error=None, enhance_qwen=True):
         source, target = Tensor("source"), Tensor("target", 1)
         edited = Tensor("qwen", 1, 1024, 1024)
         conditioning = Mock(return_value=("positive", "latent"))
@@ -115,6 +115,7 @@ class V2VRoutingTests(unittest.TestCase):
             self.assertIn("source_video", schema["required"])
             self.assertEqual(schema["optional"]["use_qwen_edit"][1]["default"], True)
             self.assertEqual(schema["optional"]["apply_fun_controlnet"][1]["default"], True)
+            self.assertEqual(schema["optional"]["enhance_qwen_prompt"][1]["default"], True)
             if fasth3:
                 self.assertEqual(schema["required"]["steps"][1]["default"], 8)
                 self.assertEqual(schema["required"]["scheduler"][1]["default"], "simple")
@@ -132,7 +133,8 @@ class V2VRoutingTests(unittest.TestCase):
                         aspect_ratio="same as reference", custom_aspect="16:9", seed=1, steps=2,
                         sampler_name="res_multistep", scheduler="simple",
                         use_qwen_edit=use_qwen, apply_fun_controlnet=use_control,
-                        prompt_override=override, qwen_prompt_override=qwen_override)
+                        prompt_override=override, qwen_prompt_override=qwen_override,
+                        enhance_qwen_prompt=enhance_qwen)
                 return None, wrapper
             result = node.generate(
                 source, "fun", "qwen-model", "qwen-clip", "qwen-vae", "custom",
@@ -141,7 +143,8 @@ class V2VRoutingTests(unittest.TestCase):
                 aspect_ratio="same as reference", custom_aspect="16:9", seed=1, steps=2,
                 sampler_name="res_multistep", scheduler="simple",
                 use_qwen_edit=use_qwen, apply_fun_controlnet=use_control,
-                prompt_override=override, qwen_prompt_override=qwen_override)
+                prompt_override=override, qwen_prompt_override=qwen_override,
+                enhance_qwen_prompt=enhance_qwen)
         picture = edited if use_qwen else (target if has_reference else source[:1])
         sent_images = conditioning.call_args.kwargs["ref_images"]
         if use_qwen or has_reference:
@@ -173,16 +176,18 @@ class V2VRoutingTests(unittest.TestCase):
         if override:
             node._enhance_edit.assert_not_called()
             self.assertEqual(result[2], override)  # raw text passes the lenient silent policy unchanged
-            self.assertEqual(result[3], qwen_override if use_qwen else "")
+            expected_qwen = (qwen_override or ("" if enhance_qwen else instruction)) if use_qwen else ""
+            self.assertEqual(result[3], expected_qwen)
         else:
             self.assertEqual(node._enhance_edit.call_args.kwargs["motion_control"], motion_control)
             self.assertEqual(node._enhance_edit.call_args.kwargs["use_qwen_edit"], use_qwen)
+            self.assertEqual(node._enhance_edit.call_args.kwargs["enhance_qwen_prompt"], enhance_qwen)
             self.assertEqual(result[2:], ("H3 prompt", "qwen prompt"))
         self.assertEqual(node.sample_args[5:8], (2, "res_multistep", "simple"))
         if use_qwen:
             self.assertIs(result[1], picture)
             if override:
-                self.assertEqual(qwen.call_args.args[3], qwen_override)
+                self.assertEqual(qwen.call_args.args[3], qwen_override or instruction)
             else:
                 self.assertEqual([t.label for t in qwen.call_args.args[4]], ["source", "target"] if has_reference else ["source"])
         else:
@@ -295,6 +300,14 @@ class V2VRoutingTests(unittest.TestCase):
         self.run_mode("native AV (discard audio)", use_qwen=False,
                       qwen_override="orphan qwen override",
                       expect_error="also needs prompt_override")
+
+    def test_qwen_enhancement_off_uses_raw_instruction_with_override(self):
+        # enhance_qwen_prompt off relaxes the pairing rule: the raw instruction becomes the Qwen prompt
+        self.run_mode("native AV (discard audio)", use_qwen=True, enhance_qwen=False,
+                      override="silent edit described by hand")
+
+    def test_qwen_enhancement_off_flows_to_the_enhancer(self):
+        self.run_mode("native AV (discard audio)", use_qwen=True, enhance_qwen=False)
 
 if __name__ == "__main__":
     unittest.main()
