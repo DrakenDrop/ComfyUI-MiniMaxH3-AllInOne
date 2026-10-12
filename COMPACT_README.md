@@ -312,7 +312,8 @@ Discovery also applies when configured external-server `autostart` is enabled. S
 ## Prompt controls and memory
 
 - `additional_system_prompt` appends user system instructions to the official-format system prompt. Node-level policies still enforce the first-frame option and V2V's audio-free prompt fields.
-- R2V only: `prompt_override` skips the LLM. Its format must match `minimax_prompt_style`: free-form text for simple, six sections for official.
+- `prompt_override` skips the LLM. Its format must match `minimax_prompt_style`: free-form text for simple, six sections for official.
+- V2V: `prompt_override` skips the llama.cpp enhancer entirely. In Qwen mode it must be paired with `qwen_prompt_override` (the Qwen image-edit instruction, e.g. `Edit <image1>: replace the dress with the outfit in <image2>.`); with `use_qwen_edit` off, `prompt_override` alone is enough and no instruction is required. The silent-video policy is still applied to the override text.
 - An incomplete official-format response (e.g. truncated by `max_tokens`) does not fail the run: the node keeps whichever sections arrived, logs a `WARNING` with the missing ones, and conditions H3 with the partial prompt. Heading-less text passes through as-is; first-frame and silent policies patch only the sections that exist. The V2V prompt-repair path keeps strict validation.
 - When llama-server reports the response stopped at the token limit (`finish_reason=length` / `stop_type=out_of_tokens`), the enhancer automatically retries once with a doubled `max_tokens` (the shared prompt prefix is KV-cached, so the retry is cheap) before accepting whatever was completed.
 - The managed llama-server is stopped after prompting by default to release VRAM. An external server is never stopped automatically. Before prompting, GPU-resident ComfyUI models are unloaded so the external LLM can load; ComfyUI reloads models when needed.

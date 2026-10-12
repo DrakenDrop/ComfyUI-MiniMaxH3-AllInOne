@@ -545,7 +545,14 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         import comfy.samplers
         required["scheduler"] = (list(comfy.samplers.SCHEDULER_NAMES), {"default": "simple"})
         optional = {"ref_image": ("IMAGE", {"tooltip": "Optional Qwen appearance reference (image 2). Leave disconnected to edit the source first frame using the text instruction only."}), **extra_inputs()}
-        optional.pop("prompt_override", None)
+        optional.pop("prompt_override", None)  # re-added below with V2V-specific pairing rules
+        optional.update({"prompt_override": ("STRING", {"multiline": True, "default": "",
+            "tooltip": "Complete MiniMax prompt; skips the llama.cpp enhancer entirely. In Qwen mode, also fill "
+                       "qwen_prompt_override. Format should match minimax_prompt_style: free-form text for simple, "
+                       "six sections for official. The silent-video policy is still applied."})})
+        optional.update({"qwen_prompt_override": ("STRING", {"multiline": True, "default": "",
+            "tooltip": "Qwen image-edit instruction used with prompt_override when use_qwen_edit is on "
+                       "(e.g. 'Edit <image1>: replace the dress with the outfit in <image2>.'). Ignored in no-Qwen mode."})})
         optional["ref_image_size"] = (["match", "max"], {"default": "max"})
         optional.update({
             "start_seconds": ("FLOAT", {"default": 0.0, "min": 0, "max": 3600}),
@@ -616,20 +623,34 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         source = v2v.resize_frames(perf.take_frames(original, indices), w, h)
 
         reference = ref_image[:1] if ref_image is not None else None
+        override = str(kw.get("prompt_override", "") or "").strip()
+        qwen_override = str(kw.get("qwen_prompt_override", "") or "").strip()
+        if qwen_override and not override:
+            raise ValueError("qwen_prompt_override also needs prompt_override (the MiniMax prompt).")
+        if override and use_qwen and not qwen_override:
+            raise ValueError("prompt_override in Qwen mode also needs qwen_prompt_override "
+                             "(the Qwen image-edit instruction), or turn use_qwen_edit off.")
         instruction = kw["instruction"].strip()
-        if not instruction and reference is None:
-            raise ValueError("Without ref_image, describe the requested edit in instruction, e.g. change her dress to red.")
-        if not instruction:
-            instruction = ("Replace only the source person's clothing with the outfit in the reference image; preserve their identity."
-                           if edit_mode == "change clothes" else
-                           "Replace the source person with the person in the reference image; preserve the source performance."
-                           if edit_mode == "change person" else "")
-        if not instruction:
-            raise ValueError("Write an edit instruction for custom edit mode")
+        if not override:
+            if not instruction and reference is None:
+                raise ValueError("Without ref_image, describe the requested edit in instruction, e.g. change her dress to red.")
+            if not instruction:
+                instruction = ("Replace only the source person's clothing with the outfit in the reference image; preserve their identity."
+                               if edit_mode == "change clothes" else
+                               "Replace the source person with the person in the reference image; preserve the source performance."
+                               if edit_mode == "change person" else "")
+            if not instruction:
+                raise ValueError("Write an edit instruction for custom edit mode")
         timer.mark("prepare_frames")
-        qwen_prompt, prompt = self._enhance_edit(source, reference, frames=frames,
-            **{**kw, "instruction": instruction, "edit_mode": edit_mode, "reuse_preprocessing": reuse_preprocessing,
-               "motion_control": motion_control})
+        if override:
+            # Skip the LLM enhancer entirely; both prompts come from the overrides.
+            lc.log("V2V prompt override: skipping the llama.cpp enhancer.")
+            qwen_prompt = qwen_override if use_qwen else ""
+            prompt = apply_policy(override, silent=True, style=str(kw.get("minimax_prompt_style", "official")))
+        else:
+            qwen_prompt, prompt = self._enhance_edit(source, reference, frames=frames,
+                **{**kw, "instruction": instruction, "edit_mode": edit_mode, "reuse_preprocessing": reuse_preprocessing,
+                   "motion_control": motion_control})
         timer.mark("enhancer")
         if use_qwen:
             qwen_image = self._cached_qwen_edit(source, reference, qwen_prompt, kw["seed"],

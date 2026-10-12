@@ -12,6 +12,9 @@ SOURCE = Path(__file__).resolve().parents[1] / "nodes_compact.py"
 spec = importlib.util.spec_from_file_location("perf", SOURCE.parent / "h3_prompter/performance.py")
 perf = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(perf)
+spec = importlib.util.spec_from_file_location("v2v_fmt", SOURCE.parent / "h3_prompter/prompt_format.py")
+fmt = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fmt)
 
 class Tensor:
     def __init__(self, label, count=22, width=768, height=1344):
@@ -33,7 +36,8 @@ class Model:
 
 class V2VRoutingTests(unittest.TestCase):
     def run_mode(self, mode, has_reference=True, motion_control="rgb source (legacy)",
-                 use_qwen=True, use_control=True, fasth3=False):
+                 use_qwen=True, use_control=True, fasth3=False, override="", qwen_override="",
+                 instruction="change clothes", expect_error=None):
         source, target = Tensor("source"), Tensor("target", 1)
         edited = Tensor("qwen", 1, 1024, 1024)
         conditioning = Mock(return_value=("positive", "latent"))
@@ -82,6 +86,7 @@ class V2VRoutingTests(unittest.TestCase):
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "MiniMaxH3V2VGenerate")
         namespace = dict(__name__="routing_pkg.nodes_compact", __package__="routing_pkg",
                          _Pipeline=Pipeline, CATEGORY="test", NONE="(none)", perf=perf, pose_control=pose,
+                         apply_policy=fmt.apply_policy,
                          prompter=types.SimpleNamespace(THINKING=["off", "low", "medium", "xhigh"]),
                          common_inputs=lambda: {}, extra_inputs=lambda: {}, choices=lambda *a, **kw: [],
                          args=lambda output: output, patch_video_only=wrapper,
@@ -116,13 +121,27 @@ class V2VRoutingTests(unittest.TestCase):
                 self.assertEqual(schema["required"]["h3_model"][0][0], "fasth3")
                 self.assertIn("vsa_keep_percent", schema["optional"])
                 self.assertIn("use_qwen_edit", schema["optional"])  # direct modes inherited
+            result = None
+            if expect_error is not None:
+                with self.assertRaisesRegex(ValueError, expect_error):
+                    node.generate(
+                        source, "fun", "qwen-model", "qwen-clip", "qwen-vae", "custom",
+                        **({"ref_image": target} if has_reference else {}),
+                        h3_sampling_mode=mode, motion_control=motion_control, reuse_preprocessing=False,
+                        instruction=instruction, resolution="768p (native)",
+                        aspect_ratio="same as reference", custom_aspect="16:9", seed=1, steps=2,
+                        sampler_name="res_multistep", scheduler="simple",
+                        use_qwen_edit=use_qwen, apply_fun_controlnet=use_control,
+                        prompt_override=override, qwen_prompt_override=qwen_override)
+                return None, wrapper
             result = node.generate(
                 source, "fun", "qwen-model", "qwen-clip", "qwen-vae", "custom",
                 **({"ref_image": target} if has_reference else {}),
-                h3_sampling_mode=mode, motion_control=motion_control, reuse_preprocessing=False, instruction="change clothes", resolution="768p (native)",
+                h3_sampling_mode=mode, motion_control=motion_control, reuse_preprocessing=False, instruction=instruction, resolution="768p (native)",
                 aspect_ratio="same as reference", custom_aspect="16:9", seed=1, steps=2,
                 sampler_name="res_multistep", scheduler="simple",
-                use_qwen_edit=use_qwen, apply_fun_controlnet=use_control)
+                use_qwen_edit=use_qwen, apply_fun_controlnet=use_control,
+                prompt_override=override, qwen_prompt_override=qwen_override)
         picture = edited if use_qwen else (target if has_reference else source[:1])
         sent_images = conditioning.call_args.kwargs["ref_images"]
         if use_qwen or has_reference:
@@ -151,17 +170,23 @@ class V2VRoutingTests(unittest.TestCase):
         if use_control:
             self.assertNotIn("mask", control.call_args.kwargs)
             self.assertNotIn("source_video", control.call_args.kwargs)
-        self.assertEqual(node._enhance_edit.call_args.kwargs["motion_control"], motion_control)
-        self.assertEqual(node._enhance_edit.call_args.kwargs["use_qwen_edit"], use_qwen)
+        if override:
+            node._enhance_edit.assert_not_called()
+            self.assertEqual(result[2], override)  # raw text passes the lenient silent policy unchanged
+            self.assertEqual(result[3], qwen_override if use_qwen else "")
+        else:
+            self.assertEqual(node._enhance_edit.call_args.kwargs["motion_control"], motion_control)
+            self.assertEqual(node._enhance_edit.call_args.kwargs["use_qwen_edit"], use_qwen)
+            self.assertEqual(result[2:], ("H3 prompt", "qwen prompt"))
         self.assertEqual(node.sample_args[5:8], (2, "res_multistep", "simple"))
         if use_qwen:
             self.assertIs(result[1], picture)
+            if override:
+                self.assertEqual(qwen.call_args.args[3], qwen_override)
+            else:
+                self.assertEqual([t.label for t in qwen.call_args.args[4]], ["source", "target"] if has_reference else ["source"])
         else:
             self.assertEqual(result[1].label, picture.label)
-        self.assertEqual(result[2:], ("H3 prompt", "qwen prompt"))
-        if use_qwen:
-            self.assertEqual([t.label for t in qwen.call_args.args[4]], ["source", "target"] if has_reference else ["source"])
-        else:
             qwen.assert_not_called()
         return node, wrapper
 
@@ -252,6 +277,24 @@ class V2VRoutingTests(unittest.TestCase):
                 else:
                     self.assertEqual(wrapper.call_args.args[0].history,
                                      ("loaded", "shift", "backend", "vsa"))
+
+    def test_prompt_override_skips_the_enhancer_in_no_qwen_mode(self):
+        for control_off in (False, True):
+            with self.subTest(control_off=control_off):
+                self.run_mode("native AV (discard audio)", use_qwen=False,
+                              use_control=not control_off, override="silent edit described by hand",
+                              instruction="")
+
+    def test_prompt_override_in_qwen_mode_needs_the_qwen_override(self):
+        self.run_mode("native AV (discard audio)", use_qwen=True,
+                      override="silent edit described by hand",
+                      qwen_override="Edit <image1> with the outfit from <image2>.")
+        self.run_mode("native AV (discard audio)", use_qwen=True,
+                      override="silent edit described by hand",
+                      expect_error="qwen_prompt_override")
+        self.run_mode("native AV (discard audio)", use_qwen=False,
+                      qwen_override="orphan qwen override",
+                      expect_error="also needs prompt_override")
 
 if __name__ == "__main__":
     unittest.main()
