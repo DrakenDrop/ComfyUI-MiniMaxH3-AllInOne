@@ -281,6 +281,7 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         use_qwen = bool(kw.get("use_qwen_edit", True))
         use_control = bool(kw.get("apply_fun_controlnet", True))
         enhance_qwen = bool(kw.get("enhance_qwen_prompt", True))
+        enhance_minimax = bool(kw.get("enhance_minimax_prompt", True))
         if use_qwen:
             h3_assets = (
                 "<Picture 1> will be the Qwen-edited appearance reference. "
@@ -465,6 +466,19 @@ class MiniMaxH3V2VGenerate(_Pipeline):
                     "User-fixed Qwen image edit instruction (context only):\n" + qwen}],
                     minimax_thinking, h3_system), "minimax_prompt")
                 lc.log("Qwen enhancement off: Qwen runs the raw instruction; MiniMax prompt enhanced only.")
+            elif not enhance_minimax:
+                # MiniMax enhancement off: the raw instruction is the MiniMax prompt;
+                # enhance the Qwen image-edit prompt only (one request).
+                qwen_system, h3_system = system.split("For minimax_prompt", 1)
+                qwen_system = qwen_system.replace(
+                    "Return a JSON object with exactly two fields: qwen_prompt and minimax_prompt. ",
+                    "Return a JSON object with exactly one string field: qwen_prompt. ")
+                qwen_system += "\n" + qwen_labels + "No Markdown fences."
+                if extra:
+                    qwen_system += "\nAdditional user preferences:\n" + extra
+                qwen = prompt_field_unchecked(request(parts, qwen_thinking, qwen_system), "qwen_prompt")
+                minimax = ""
+                lc.log("MiniMax enhancement off: Qwen prompt enhanced only; MiniMax uses the raw instruction.")
             else:
                 if qwen_thinking == minimax_thinking:
                     content = request(parts, qwen_thinking)
@@ -563,19 +577,23 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         import comfy.samplers
         required["scheduler"] = (list(comfy.samplers.SCHEDULER_NAMES), {"default": "simple"})
         optional = {"ref_image": ("IMAGE", {"tooltip": "Optional Qwen appearance reference (image 2). Leave disconnected to edit the source first frame using the text instruction only."}), **extra_inputs()}
-        optional.pop("prompt_override", None)  # re-added below with V2V-specific pairing rules
-        optional.update({"prompt_override": ("STRING", {"multiline": True, "default": "",
-            "tooltip": "Complete MiniMax prompt; skips the llama.cpp enhancer entirely. In Qwen mode, also fill "
-                       "qwen_prompt_override. Format should match minimax_prompt_style: free-form text for simple, "
-                       "six sections for official. The silent-video policy is still applied."})})
-        optional.update({"qwen_prompt_override": ("STRING", {"multiline": True, "default": "",
-            "tooltip": "Qwen image-edit instruction used with prompt_override when use_qwen_edit is on "
-                       "(e.g. 'Edit <image1>: replace the dress with the outfit in <image2>.'). Ignored in no-Qwen mode."})})
+        optional.pop("prompt_override", None)  # the instruction doubles as the override via the enhance toggles
+        if "instruction" in required:  # tooltip: the instruction doubles as the verbatim prompt
+            required["instruction"] = ("STRING", {**required["instruction"][1],
+                "tooltip": "User prompt: what you want (any language). With an enhance toggle off, this text is "
+                           "used VERBATIM for that side (Qwen edit instruction / MiniMax prompt); with it on, the "
+                           "llama.cpp enhancer rewrites it. Both off = no LLM run; this text then serves as both "
+                           "prompts and is required."})
         optional.update({"enhance_qwen_prompt": ("BOOLEAN", {
             "default": True,
             "tooltip": "Off = skip only the Qwen prompt enhancement: the Qwen image edit runs on your raw "
                        "instruction verbatim while the llama.cpp enhancer still writes the MiniMax prompt. "
                        "Saves one LLM request and keeps your instruction exactly as written."})})
+        optional.update({"enhance_minimax_prompt": ("BOOLEAN", {
+            "default": True,
+            "tooltip": "Off = skip only the MiniMax prompt enhancement: prompt_override must contain the complete "
+                       "MiniMax prompt (used verbatim after the silent-video policy) while the enhancer can still "
+                       "write the Qwen prompt. Turn both off (or set both overrides) to skip the LLM entirely."})})
         optional["ref_image_size"] = (["match", "max"], {"default": "max"})
         optional.update({
             "start_seconds": ("FLOAT", {"default": 0.0, "min": 0, "max": 3600}),
@@ -647,16 +665,13 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         source = v2v.resize_frames(perf.take_frames(original, indices), w, h)
 
         reference = ref_image[:1] if ref_image is not None else None
-        override = str(kw.get("prompt_override", "") or "").strip()
-        qwen_override = str(kw.get("qwen_prompt_override", "") or "").strip()
-        if qwen_override and not override:
-            raise ValueError("qwen_prompt_override also needs prompt_override (the MiniMax prompt).")
-        if override and use_qwen and not qwen_override and enhance_qwen:
-            raise ValueError("prompt_override in Qwen mode also needs qwen_prompt_override "
-                             "(the Qwen image-edit instruction), set enhance_qwen_prompt off "
-                             "to use the raw instruction, or turn use_qwen_edit off.")
+        enhance_minimax = bool(kw.get("enhance_minimax_prompt", True))
+        # Which prompt halves are enhanced by the LLM? A toggle off means the raw
+        # instruction is used verbatim for that side.
+        llm_for_minimax = enhance_minimax
+        llm_for_qwen = use_qwen and enhance_qwen
         instruction = kw["instruction"].strip()
-        if not override:
+        if llm_for_minimax or llm_for_qwen:
             if not instruction and reference is None:
                 raise ValueError("Without ref_image, describe the requested edit in instruction, e.g. change her dress to red.")
             if not instruction:
@@ -666,18 +681,23 @@ class MiniMaxH3V2VGenerate(_Pipeline):
                                if edit_mode == "change person" else "")
             if not instruction:
                 raise ValueError("Write an edit instruction for custom edit mode")
+        elif not instruction:
+            raise ValueError("With both prompt enhancements off, instruction is the prompt used verbatim; it cannot be empty.")
         timer.mark("prepare_frames")
-        if override:
-            # Skip the LLM enhancer entirely; both prompts come from the overrides.
-            lc.log("V2V prompt override: skipping the llama.cpp enhancer.")
-            qwen_prompt = (qwen_override or instruction) if use_qwen else ""
-            if use_qwen and not qwen_prompt:
-                raise ValueError("Qwen mode needs a prompt: fill qwen_prompt_override or instruction.")
-            prompt = apply_policy(override, silent=True, style=str(kw.get("minimax_prompt_style", "official")))
-        else:
-            qwen_prompt, prompt = self._enhance_edit(source, reference, frames=frames,
+        if llm_for_minimax or llm_for_qwen:
+            qwen_prompt, minimax_llm = self._enhance_edit(source, reference, frames=frames,
                 **{**kw, "instruction": instruction, "edit_mode": edit_mode, "reuse_preprocessing": reuse_preprocessing,
                    "motion_control": motion_control})
+            if llm_for_minimax:
+                prompt = minimax_llm
+            else:
+                prompt = apply_policy(instruction, silent=True, style=str(kw.get("minimax_prompt_style", "official")))
+                lc.log("MiniMax enhancement off: the instruction is used verbatim as the MiniMax prompt.")
+        else:
+            # No LLM at all: the instruction serves as both prompts.
+            lc.log("Prompt enhancements off: skipping the llama.cpp enhancer; the instruction is used verbatim.")
+            qwen_prompt = instruction if use_qwen else ""
+            prompt = apply_policy(instruction, silent=True, style=str(kw.get("minimax_prompt_style", "official")))
         timer.mark("enhancer")
         if use_qwen:
             qwen_image = self._cached_qwen_edit(source, reference, qwen_prompt, kw["seed"],
