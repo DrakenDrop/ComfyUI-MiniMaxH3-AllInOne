@@ -168,6 +168,39 @@ class PreprocessingTests(unittest.TestCase):
         self.assertTrue(any(p.get("text", "").startswith("User-fixed Qwen image edit instruction")
                             for p in user_parts if p.get("type") == "text"))
 
+    def test_minimax_enhancement_off_enhances_qwen_only(self):
+        response = json.dumps({"qwen_prompt": "Edit <image1>: swap the outfit with <image2>."})
+
+        def rebuild():
+            self.request = Mock(return_value=(response, None, None))
+            loader = self.loader
+
+            class Pipeline:
+                def _load(self, kind, name):
+                    return loader(kind, name)
+
+            tree = ast.parse((ROOT / "nodes_compact.py").read_text())
+            cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "MiniMaxH3V2VGenerate")
+            namespace = dict(__name__="speed_pkg.nodes_compact", __package__="speed_pkg",
+                             _Pipeline=Pipeline, CATEGORY="test", NONE="(none)", os=os, json=json, perf=perf,
+                             apply_policy=fmt.apply_policy,
+                             prompt_field_unchecked=fmt.prompt_field_unchecked,
+                             parse_edit_response_unchecked=fmt.parse_edit_response_unchecked,
+                             CFG={"server_url": "http://local"}, local_models=types.SimpleNamespace(resolve=self.resolve),
+                             managed_server=self.server, parse_edit_response_with_repair=fmt.parse_edit_response_with_repair,
+                             prompter=types.SimpleNamespace(THINKING=["off", "low", "medium", "xhigh"],
+                                                            MiniMaxH3R2VPrompter=types.SimpleNamespace(_run=self.request)))
+            exec(compile(ast.Module(body=[cls], type_ignores=[]), "nodes_compact.py", "exec"), namespace)
+            return namespace["MiniMaxH3V2VGenerate"]()
+
+        self.node = rebuild()
+        qwen, minimax = self.enhance(use_qwen_edit=True, enhance_minimax_prompt=False)
+        self.assertEqual(qwen, "Edit <image1>: swap the outfit with <image2>.")
+        self.assertEqual(minimax, "")  # the MiniMax side comes from the instruction in generate()
+        self.assertEqual(self.request.call_count, 1)
+        self.assertIn("exactly one string field: qwen_prompt",
+                      self.request.call_args.args[2]["content"])
+
     def test_qwen_hit_skips_loaders_and_returns_isolated_cpu_copy(self):
         first = self.edit()
         first.fill_(0.9)
