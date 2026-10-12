@@ -110,6 +110,7 @@ class PreprocessingTests(unittest.TestCase):
             cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "MiniMaxH3V2VGenerate")
             namespace = dict(__name__="speed_pkg.nodes_compact", __package__="speed_pkg",
                              _Pipeline=Pipeline, CATEGORY="test", NONE="(none)", os=os, json=json, perf=perf,
+                             apply_policy=fmt.apply_policy,
                              prompt_field_unchecked=fmt.prompt_field_unchecked,
                              parse_edit_response_unchecked=fmt.parse_edit_response_unchecked,
                              CFG={"server_url": "http://local"}, local_models=types.SimpleNamespace(resolve=self.resolve),
