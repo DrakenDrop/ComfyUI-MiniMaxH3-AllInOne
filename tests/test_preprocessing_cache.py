@@ -13,6 +13,15 @@ from unittest.mock import Mock, patch
 import torch
 
 ROOT = Path(__file__).resolve().parents[1]
+def module_constants(source_path, *names):
+    """Extract module-level string constants from a node file without importing it."""
+    tree = ast.parse(Path(source_path).read_text(encoding="utf-8"))
+    wanted = set(names)
+    assigns = [n for n in tree.body if isinstance(n, ast.Assign)
+               and any(isinstance(t, ast.Name) and t.id in wanted for t in n.targets)]
+    out = {}
+    exec(compile(ast.Module(body=assigns, type_ignores=[]), str(source_path), "exec"), out)
+    return {k: out[k] for k in wanted}
 
 
 def load(filename):
@@ -24,6 +33,8 @@ def load(filename):
 
 perf = load("performance.py")
 fmt = load("prompt_format.py")
+
+V2V_CONSTS = module_constants(ROOT / 'nodes_compact.py', 'VIDEO_EDIT_MODE', 'DEFAULT_QWEN_ENHANCER_SYSTEM_PROMPT')
 prompts = load("prompts.py")
 
 
@@ -73,6 +84,7 @@ class PreprocessingTests(unittest.TestCase):
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "MiniMaxH3V2VGenerate")
         namespace = dict(__name__="speed_pkg.nodes_compact", __package__="speed_pkg",
                          _Pipeline=Pipeline, CATEGORY="test", NONE="(none)", os=os, json=json, perf=perf,
+                         **V2V_CONSTS,
                          prompt_field_unchecked=fmt.prompt_field_unchecked,
                          parse_edit_response_unchecked=fmt.parse_edit_response_unchecked,
                          CFG={"server_url": "http://local"}, local_models=types.SimpleNamespace(resolve=self.resolve),
@@ -110,7 +122,7 @@ class PreprocessingTests(unittest.TestCase):
             cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "MiniMaxH3V2VGenerate")
             namespace = dict(__name__="speed_pkg.nodes_compact", __package__="speed_pkg",
                              _Pipeline=Pipeline, CATEGORY="test", NONE="(none)", os=os, json=json, perf=perf,
-                             apply_policy=fmt.apply_policy,
+                             apply_policy=fmt.apply_policy, **V2V_CONSTS,
                              prompt_field_unchecked=fmt.prompt_field_unchecked,
                              parse_edit_response_unchecked=fmt.parse_edit_response_unchecked,
                              CFG={"server_url": "http://local"}, local_models=types.SimpleNamespace(resolve=self.resolve),
@@ -147,7 +159,7 @@ class PreprocessingTests(unittest.TestCase):
             cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "MiniMaxH3V2VGenerate")
             namespace = dict(__name__="speed_pkg.nodes_compact", __package__="speed_pkg",
                              _Pipeline=Pipeline, CATEGORY="test", NONE="(none)", os=os, json=json, perf=perf,
-                             apply_policy=fmt.apply_policy,
+                             apply_policy=fmt.apply_policy, **V2V_CONSTS,
                              prompt_field_unchecked=fmt.prompt_field_unchecked,
                              parse_edit_response_unchecked=fmt.parse_edit_response_unchecked,
                              CFG={"server_url": "http://local"}, local_models=types.SimpleNamespace(resolve=self.resolve),
@@ -183,7 +195,7 @@ class PreprocessingTests(unittest.TestCase):
             cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "MiniMaxH3V2VGenerate")
             namespace = dict(__name__="speed_pkg.nodes_compact", __package__="speed_pkg",
                              _Pipeline=Pipeline, CATEGORY="test", NONE="(none)", os=os, json=json, perf=perf,
-                             apply_policy=fmt.apply_policy,
+                             apply_policy=fmt.apply_policy, **V2V_CONSTS,
                              prompt_field_unchecked=fmt.prompt_field_unchecked,
                              parse_edit_response_unchecked=fmt.parse_edit_response_unchecked,
                              CFG={"server_url": "http://local"}, local_models=types.SimpleNamespace(resolve=self.resolve),
@@ -232,10 +244,41 @@ class PreprocessingTests(unittest.TestCase):
         self.edit()
         self.assertEqual(self.qwen.call_count, 3)
 
+    def test_enhancer_cache_does_not_leak_across_enhance_toggles(self):
+        # Regression: a run with one toggle off cached its half-empty result under a key
+        # that an all-on run shared, returning an empty MiniMax prompt from the cache.
+        qwen_json = json.dumps({"qwen_prompt": "QWEN"})
+        minimax_json = json.dumps({"minimax_prompt": "MINIMAX"})
+        self.request.side_effect = [(qwen_json, None, None),      # run 1: qwen-only request
+                                    (qwen_json, None, None),      # run 2: qwen enhancer
+                                    (minimax_json, None, None)]   # run 2: minimax request
+        q1, m1 = self.enhance(use_qwen_edit=True, enhance_minimax_prompt=False)
+        self.assertEqual((q1, m1), ("QWEN", ""))                  # legitimately half-empty, cacheable
+        q2, m2 = self.enhance(use_qwen_edit=True, enhance_minimax_prompt=True)
+        self.assertEqual((q2, m2), ("QWEN", "MINIMAX"))           # must NOT reuse run 1's entry
+
+    def test_empty_enhanced_minimax_prompt_raises_and_is_not_cached(self):
+        good = (json.dumps({"qwen_prompt": "QWEN"}), None, None)
+        self.request.side_effect = [good,
+                                    (json.dumps({"minimax_prompt": ""}), None, None),
+                                    good,
+                                    (json.dumps({"minimax_prompt": "MINIMAX"}), None, None)]
+        with self.assertRaisesRegex(ValueError, "empty"):
+            self.enhance()                       # all-on: minimax came back empty -> hard error
+        self.assertEqual(self.enhance(), ("QWEN", "MINIMAX"))  # nothing cached: retry works
+
+    def test_empty_enhanced_qwen_prompt_warns_and_is_not_cached(self):
+        empty_qwen = (json.dumps({"qwen_prompt": ""}), None, None)
+        minimax_json = (json.dumps({"minimax_prompt": "MINIMAX"}), None, None)
+        good_qwen = (json.dumps({"qwen_prompt": "QWEN"}), None, None)
+        self.request.side_effect = [empty_qwen, minimax_json, good_qwen, minimax_json]
+        self.assertEqual(self.enhance(), ("", "MINIMAX"))         # passed through with a warning
+        self.assertEqual(self.enhance(), ("QWEN", "MINIMAX"))     # not cached: fresh requests
+
     def test_enhancer_hit_skips_unload_server_start_and_inference(self):
         original = self.enhance()
         self.assertEqual(self.enhance(steps=2, scheduler="simple", control_strength=0.8), original)
-        self.assertEqual(self.request.call_count, 1)
+        self.assertEqual(self.request.call_count, 2)
         self.unload.assert_called_once()
         self.server.ensure.assert_called_once()
         self.assertEqual(self.server.stop.call_count, 2)
@@ -246,25 +289,25 @@ class PreprocessingTests(unittest.TestCase):
                         {"additional_system_prompt": "retain background"}):
             before = self.request.call_count
             self.enhance(**changes)
-            self.assertEqual(self.request.call_count, before + 1)
+            self.assertEqual(self.request.call_count, before + 2)
         self.enhance()
         before = self.request.call_count
         self.source[4, 0, 0, 0] = 0.4
         self.enhance()
-        self.assertEqual(self.request.call_count, before + 1)
+        self.assertEqual(self.request.call_count, before + 2)
         (self.root / "mmproj.gguf").write_bytes(b"new projector")
         self.enhance()
-        self.assertEqual(self.request.call_count, before + 2)
+        self.assertEqual(self.request.call_count, before + 4)
 
     def test_external_and_disabled_enhancer_always_query(self):
         self.enhance()
         self.enhance(reuse_preprocessing=False)
         self.enhance()
-        self.assertEqual(self.request.call_count, 3)
+        self.assertEqual(self.request.call_count, 6)
         self.resolve.return_value = (None, None)
         self.enhance()
         self.enhance()
-        self.assertEqual(self.request.call_count, 5)
+        self.assertEqual(self.request.call_count, 10)
 
     def test_frame_view_matches_indexed_selection_without_copy(self):
         frames = torch.arange(60).reshape(5, 2, 2, 3)
@@ -327,21 +370,25 @@ class PreprocessingTests(unittest.TestCase):
             before = self.request.call_count
             self.assertEqual(self.enhance(minimax_prompt_style=style), result)
             self.assertEqual(self.request.call_count, before)
-        self.assertEqual(self.request.call_count, 2)
+        self.assertEqual(self.request.call_count, 4)
 
     def test_incomplete_sections_and_extra_envelope_fields_are_accepted(self):
         self.request.return_value = (json.dumps({"qwen_prompt": "raw edit", "minimax_prompt":
             {"summary": "Start from <Picture 1>.", "extra": "Keep this too."}, "notes": "ignored envelope metadata"}), None, None)
         result = self.enhance(minimax_prompt_style="official")
         self.assertEqual(result, ("raw edit", "summary:\nStart from <Picture 1>.\n\nextra:\nKeep this too."))
-        self.assertEqual(self.request.call_count, 1)
+        self.assertEqual(self.request.call_count, 2)
 
     def test_malformed_envelope_is_used_raw_without_retry(self):
-        for raw in ("Plain free-form output.", '{"minimax_prompt": "truncated', ""):
+        for raw in ("Plain free-form output.", '{"minimax_prompt": "truncated'):
             self.request.return_value = (raw, None, None)
             before = self.request.call_count
             self.assertEqual(self.enhance(reuse_preprocessing=False), (raw, raw))
-            self.assertEqual(self.request.call_count, before + 1)
+            self.assertEqual(self.request.call_count, before + 2)
+        # a completely empty response is a hard error, never a silent empty prompt
+        self.request.return_value = ("", None, None)
+        with self.assertRaisesRegex(ValueError, "empty"):
+            self.enhance(reuse_preprocessing=False)
 
 
     def test_pose_prompt_mode_uses_only_qwen_h3_image_and_invalidates_rgb_cache(self):
@@ -360,7 +407,7 @@ class PreprocessingTests(unittest.TestCase):
                     q, m = self.enhance(motion_control="pose only (DWPose)",
                                         reference=self.reference if has_reference else None,
                                         minimax_prompt_style=style)
-                    self.assertEqual(self.request.call_count, before + 1)
+                    self.assertEqual(self.request.call_count, before + 2)
                     self.assertEqual(q, qwen)
                     self.assertNotIn("<Video", m)
                     system = self.request.call_args.args[2]["content"]
@@ -382,9 +429,9 @@ class PreprocessingTests(unittest.TestCase):
             before = self.request.call_count
             self.enhance(qwen_thinking=mode, minimax_thinking=mode)
             self.assertEqual(self.request.call_args.args[4], mode)
-            self.assertEqual(self.request.call_count, before + 1)
+            self.assertEqual(self.request.call_count, before + 2)
             self.enhance(qwen_thinking=mode, minimax_thinking=mode)
-            self.assertEqual(self.request.call_count, before + 1)
+            self.assertEqual(self.request.call_count, before + 2)
         for field in ("qwen_thinking", "minimax_thinking"):
             with self.assertRaisesRegex(ValueError, field):
                 self.enhance(**{field: "invalid"})
@@ -466,7 +513,7 @@ class PreprocessingTests(unittest.TestCase):
     def test_keep_models_skips_forced_unload_on_enhancer_miss(self):
         self.enhance(keep_models_loaded=True)
         self.enhance(keep_models_loaded=True, seed=2)
-        self.assertEqual(self.request.call_count, 2)
+        self.assertEqual(self.request.call_count, 4)
         self.unload.assert_not_called()
         self.enhance(keep_models_loaded=False, seed=3)
         self.unload.assert_called_once()

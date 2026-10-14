@@ -6,7 +6,7 @@ import json
 from . import nodes as prompter
 from .h3_prompter import canvas as geometry, local_models, managed_server, v2v, performance as perf, pose_control
 from .h3_prompter.video_only import patch_video_only, VideoOnlyNoise
-from .h3_prompter.prompt_format import apply_policy, parse_edit_response_unchecked, prompt_field_unchecked
+from .h3_prompter.prompt_format import apply_policy, prompt_field_unchecked
 
 CFG = prompter._CFG
 CATEGORY = "MiniMax H3/All in One"
@@ -452,9 +452,13 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         reuse = kw.get("reuse_preprocessing", True) and model_path is not None
         key = None
         if reuse:
-            key = perf.request_key("unchecked-prompts-v1", system, str(kw.get("qwen_enhancer_system_prompt") or ""), parts,  # key includes Qwen system prompt
+            # v2: the enhance/use_qwen toggles change what this request produces but not
+            # system/parts, so they must be part of the key or half-empty results leak
+            # between toggle states (e.g. minimax="" from an enhance_minimax=False run).
+            key = perf.request_key("unchecked-prompts-v2", system, str(kw.get("qwen_enhancer_system_prompt") or ""), parts,  # key includes Qwen system prompt
                                    base, qwen_thinking, minimax_thinking, kw.get("context_size", 32768), CFG,
-                                   perf.file_stamp(model_path), perf.file_stamp(mmproj_path))
+                                   perf.file_stamp(model_path), perf.file_stamp(mmproj_path),
+                                   use_qwen, enhance_qwen, enhance_minimax)
             cached = cache.get(key)
             if cached is not None:
                 lc.log("V2V cache: enhancer hit; skipping model unloading and llama.cpp inference.")
@@ -485,6 +489,8 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         def run_qwen_enhancer():
             q_system = (str(kw.get("qwen_enhancer_system_prompt") or "").strip()
                         or DEFAULT_QWEN_ENHANCER_SYSTEM_PROMPT)
+            if extra:
+                q_system += "\nAdditional user preferences:\n" + extra
             q_parts = [{"type": "text", "text": "Video edit instruction (convert it to a final-state image edit): " + instruction},
                        {"type": "text", "text": "<image1>: source frame, the canvas to edit."},
                        {"type": "image_url", "image_url": {"url": media.pil_to_data_url(
@@ -528,27 +534,32 @@ class MiniMaxH3V2VGenerate(_Pipeline):
             else:
                 # Always two requests: the Qwen prompt comes from the
                 # dedicated final-state system prompt; MiniMax still gets the full instruction.
-                if True:
-                    qwen = run_qwen_enhancer()
-                    qwen_system, h3_system = system.split("For minimax_prompt", 1)
-                    h3_system = "For minimax_prompt" + h3_system.split("\n\nResponse envelope:", 1)[0]
-                    h3_system += ("\nReturn JSON with exactly one field: minimax_prompt. " +
-                                  ("Its value is an object with six non-empty string fields: " +
-                                   ", ".join(prompts.R2V_FIELDS) +
-                                   ". Set overall_soundscape and non_diegetic_music to N/A. "
-                                   if style == "official" else "Its value is concise prose as a string. ") +
-                                  "No Markdown fences. The accepted Qwen prompt is context only; "
-                                  "translate its image roles into the H3 asset roles above.")
-                    minimax_value = prompt_field_unchecked(request(parts + [{"type": "text", "text":
-                        "Accepted Qwen image edit prompt:\n" + qwen}], minimax_thinking, h3_system), "minimax_prompt")
-                    content = json.dumps({"qwen_prompt": qwen, "minimax_prompt": minimax_value})
-                qwen, minimax = parse_edit_response_unchecked(content)
+                qwen = run_qwen_enhancer()
+                qwen_system, h3_system = system.split("For minimax_prompt", 1)
+                h3_system = "For minimax_prompt" + h3_system.split("\n\nResponse envelope:", 1)[0]
+                h3_system += ("\nReturn JSON with exactly one field: minimax_prompt. " +
+                              ("Its value is an object with six non-empty string fields: " +
+                               ", ".join(prompts.R2V_FIELDS) +
+                               ". Set overall_soundscape and non_diegetic_music to N/A. "
+                               if style == "official" else "Its value is concise prose as a string. ") +
+                              "No Markdown fences. The accepted Qwen prompt is context only; "
+                              "translate its image roles into the H3 asset roles above.")
+                minimax = prompt_field_unchecked(request(parts + [{"type": "text", "text":
+                    "Accepted Qwen image edit prompt:\n" + qwen}], minimax_thinking, h3_system), "minimax_prompt")
                 lc.log("V2V enhancer: using output directly; prompt validation and correction retries bypassed.")
         finally:
             if kw.get("unload_llm_after_prompt", True) and model_path:
                 managed_server.stop(CFG)
+        if enhance_minimax and not minimax.strip():
+            raise ValueError(
+                "The MiniMax prompt enhancer returned an empty prompt. Nothing was cached; check the "
+                "llama.cpp response in the log (truncation, max_tokens) and run the node again.")
         if reuse:
-            cache.put(key, (qwen, minimax))
+            if use_qwen and enhance_qwen and not qwen.strip():
+                lc.log("WARNING: the Qwen prompt enhancer returned an empty prompt; this result was NOT "
+                       "cached. The Qwen image edit will receive that empty text.")
+            else:
+                cache.put(key, (qwen, minimax))
         lc.log("One instruction enhanced into Qwen and MiniMax prompts.")
         return qwen, minimax
 
