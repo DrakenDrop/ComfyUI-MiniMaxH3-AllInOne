@@ -85,7 +85,7 @@ class R2VRoutingTests(unittest.TestCase):
         kw.update(changes)
         return self.node.generate(**kw)
 
-    def assert_references(self, image_indices, two_audio=False):
+    def assert_references(self, image_indices, two_audio=False, zero_audio=False):
         enhanced = self.enhancer.call_args.kwargs
         conditioned = self.conditioning.call_args.kwargs
         self.assertEqual([k for k in enhanced if k.startswith("image_")],
@@ -95,7 +95,7 @@ class R2VRoutingTests(unittest.TestCase):
         for i, source in enumerate(image_indices):
             self.assertTrue(torch.equal(enhanced[f"image_{i + 1}"], self.images[source][:1]))
             self.assertIs(enhanced[f"image_{i + 1}"], conditioned["ref_images"][f"ref_image_{i}"])
-        count = 2 if two_audio else 1
+        count = 0 if zero_audio else (2 if two_audio else 1)
         self.assertEqual([k for k in enhanced if k.startswith("audio_")],
                          [f"audio_{i}" for i in range(1, count + 1)])
         self.assertEqual(list(conditioned["ref_audios"]), [f"ref_audio_{i}" for i in range(count)])
@@ -121,11 +121,23 @@ class R2VRoutingTests(unittest.TestCase):
 
     def test_schema_preserves_required_inputs_and_adds_optional_sockets(self):
         schema = self.node.INPUT_TYPES()
-        for name, kind in (("ref_image", "IMAGE"), ("ref_audio", "AUDIO")):
-            self.assertEqual(schema["required"][name][0], kind)
-        for name, kind in (("ref_image_2", "IMAGE"), ("ref_image_3", "IMAGE"), ("ref_audio_2", "AUDIO")):
+        self.assertEqual(schema["required"]["ref_image"][0], "IMAGE")
+        for name, kind in (("ref_audio", "AUDIO"), ("ref_image_2", "IMAGE"), ("ref_image_3", "IMAGE"),
+                           ("ref_audio_2", "AUDIO")):
             self.assertNotIn(name, schema["required"])
             self.assertEqual(schema["optional"][name][0], kind)
+
+    def test_no_audio_reference_runs_without_audio_assets(self):
+        result = self.generate(ref_audio=None, ref_audio_2=None)
+        self.assert_references([0], zero_audio=True)
+        self.assertNotIn("<Audio", self.enhancer.call_args.kwargs["instruction"])
+        self.assertIn("No audio references are supplied", self.enhancer.call_args.kwargs["instruction"])
+        self.decode_audio.assert_called_once()
+        self.assertIs(result[2], self.generated_audio)
+
+    def test_reuse_mode_without_any_audio_fails(self):
+        with self.assertRaisesRegex(ValueError, "at least one connected audio"):
+            self.generate(ref_audio=None, ref_audio_2=None, audio_mode="reuse reference exactly")
 
     def test_old_workflow_omitting_new_inputs_keeps_single_references(self):
         result = self.generate()
