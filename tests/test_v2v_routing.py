@@ -8,6 +8,17 @@ import unittest
 from unittest.mock import Mock, patch
 
 SOURCE = Path(__file__).resolve().parents[1] / "nodes_compact.py"
+def module_constants(source_path, *names):
+    """Extract module-level string constants from a node file without importing it."""
+    tree = ast.parse(Path(source_path).read_text(encoding="utf-8"))
+    wanted = set(names)
+    assigns = [n for n in tree.body if isinstance(n, ast.Assign)
+               and any(isinstance(t, ast.Name) and t.id in wanted for t in n.targets)]
+    out = {}
+    exec(compile(ast.Module(body=assigns, type_ignores=[]), str(source_path), "exec"), out)
+    return {k: out[k] for k in wanted}
+
+V2V_CONSTANTS = module_constants(SOURCE, "VIDEO_EDIT_MODE", "DEFAULT_QWEN_ENHANCER_SYSTEM_PROMPT")
 
 spec = importlib.util.spec_from_file_location("perf", SOURCE.parent / "h3_prompter/performance.py")
 perf = importlib.util.module_from_spec(spec)
@@ -87,7 +98,7 @@ class V2VRoutingTests(unittest.TestCase):
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "MiniMaxH3V2VGenerate")
         namespace = dict(__name__="routing_pkg.nodes_compact", __package__="routing_pkg",
                          _Pipeline=Pipeline, CATEGORY="test", NONE="(none)", perf=perf, pose_control=pose,
-                         apply_policy=fmt.apply_policy,
+                         apply_policy=fmt.apply_policy, **V2V_CONSTANTS,
                          prompter=types.SimpleNamespace(THINKING=["off", "low", "medium", "xhigh"]),
                          common_inputs=lambda: {}, extra_inputs=lambda: {}, choices=lambda *a, **kw: [],
                          args=lambda output: output, patch_video_only=wrapper,
@@ -244,7 +255,7 @@ class V2VRoutingTests(unittest.TestCase):
         tree = ast.parse(SOURCE.read_text())
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "MiniMaxH3V2VGenerate")
         ns = dict(__name__="routing_pkg.nodes_compact", __package__="routing_pkg", _Pipeline=Pipeline,
-                  CATEGORY="t", NONE="(none)", perf=perf, pose_control=pose,
+                  CATEGORY="t", NONE="(none)", perf=perf, pose_control=pose, **V2V_CONSTANTS,
                   prompter=types.SimpleNamespace(THINKING=["off"]), common_inputs=lambda: {}, extra_inputs=lambda: {},
                   choices=lambda *a, **kw: [], args=lambda o: o, patch_video_only=Mock(),
                   geometry=types.SimpleNamespace(video_timeline=lambda *a: (22, list(range(22))), canvas=lambda *a: (1, 1)),
