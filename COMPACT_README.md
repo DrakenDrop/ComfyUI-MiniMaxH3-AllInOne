@@ -303,7 +303,9 @@ For a locally selected GGUF, the node finds and starts an installed `llama-serve
 2. `LLAMA_SERVER_PATH` / `LLAMA_CPP_DIR` environment variables and PATH.
 3. The custom-node package, ComfyUI and its portable parent, registered LLM folders, the Python executable folder, home/Downloads, and common Windows/Linux locations such as `C:/llama.cpp` and `/workspace/llama.cpp`.
 
-Known layouts include the folder itself, `bin`, `build/bin`, and `build/bin/Release`, including extracted `llama-*` release folders. The scan is bounded; it does not search every disk recursively. Keep the executable beside its required libraries. Discovery does not download llama.cpp.
+Known layouts include the folder itself, `bin`, `build/bin`, and `build/bin/Release`, including extracted `llama-*` release folders.
+
+**Remote API instead of a local server:** set `"api_key"` in config.json to route the enhancer to a remote OpenAI-compatible endpoint (e.g. Venice) at `server_url`. Every request then carries `Authorization: Bearer <key>`, and the node never starts or health-checks a local llama-server. Select `(llama-server yang sudah jalan)` as the model so no local GGUF is resolved. The scan is bounded; it does not search every disk recursively. Keep the executable beside its required libraries. Discovery does not download llama.cpp.
 
 If an old config contains a stale example path, set `llama_server_path` to an empty string or `auto`. A valid manual override retains priority; an invalid explicit override reports an error. Unusual locations can be listed in `llama_server_search_dirs` in config.json. The chosen executable is logged in the ComfyUI console.
 

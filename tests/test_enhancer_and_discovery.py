@@ -300,5 +300,28 @@ class StreamTruncationTests(unittest.TestCase):
         self.assertFalse(timings["truncated"])
         self.assertEqual(timings["finish_reason"], "")
 
+    def _stream_capture_request(self):
+        chunks = [{"choices": [{"delta": {"content": "hi"}, "finish_reason": "stop"}]}]
+        with patch.object(lc.urllib.request, "urlopen", return_value=_FakeSSE(chunks)) as mocked:
+            lc.stream_chat("http://x", {"messages": []})
+            return mocked.call_args.args[0]
+
+    def test_api_key_adds_bearer_header_and_skips_local_health(self):
+        lc._API_KEY = "secret-token"
+        try:
+            req = self._stream_capture_request()
+            self.assertEqual(req.headers.get("Authorization"), "Bearer secret-token")
+            with patch.object(lc, "server_ready") as ready:
+                lc.ensure_server("https://remote.example/v1", {"api_key": "secret-token"})
+                ready.assert_not_called()  # remote API: never probes a local /health
+        finally:
+            lc._API_KEY = ""
+            lc.load_config()
+
+    def test_without_api_key_no_auth_header(self):
+        lc._API_KEY = ""
+        req = self._stream_capture_request()
+        self.assertNotIn("Authorization", req.headers)
+
 if __name__ == "__main__":
     unittest.main()

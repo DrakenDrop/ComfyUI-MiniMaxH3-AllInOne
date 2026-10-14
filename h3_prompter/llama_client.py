@@ -27,6 +27,10 @@ _CONFIG_PATH = os.path.join(_PACK_DIR, "config.json")
 
 DEFAULT_CONFIG = {
     "server_url": "http://127.0.0.1:8080",
+    # When set, the enhancer talks to a REMOTE OpenAI-compatible API (e.g. Venice)
+    # at server_url with this bearer token: no local llama-server is started or
+    # health-checked, and every request carries Authorization: Bearer <key>.
+    "api_key": "",
     "model_alias": "qwen3.8-27b",
     "request_timeout_seconds": 600,
     "autostart": False,
@@ -41,6 +45,7 @@ DEFAULT_CONFIG = {
 }
 
 _server_process = None
+_API_KEY = ""
 
 
 class ReasoningDetected(Exception):
@@ -56,6 +61,7 @@ def log(msg: str) -> None:
 
 
 def load_config() -> dict:
+    global _API_KEY
     cfg = dict(DEFAULT_CONFIG)
     if os.path.isfile(_CONFIG_PATH):
         try:
@@ -63,6 +69,7 @@ def load_config() -> dict:
                 cfg.update(json.load(fh))
         except Exception as exc:  # noqa: BLE001
             log(f"config.json could not be read ({exc}); using defaults.")
+    _API_KEY = str(cfg.get("api_key") or "").strip()
     return cfg
 
 
@@ -102,9 +109,13 @@ def _start_server(cfg: dict) -> None:
 
 def ensure_server(server_url: str, cfg: dict | None = None) -> None:
     """Make sure llama-server answers /health. Optionally start it."""
+    global _API_KEY
+    cfg = cfg or load_config()
+    _API_KEY = str(cfg.get("api_key") or "").strip()
+    if _API_KEY:
+        return  # remote OpenAI-compatible API (e.g. Venice): no local /health
     if server_ready(server_url):
         return
-    cfg = cfg or load_config()
     if not cfg.get("autostart"):
         # maybe it's still loading: wait briefly before failing
         for _ in range(10):
@@ -167,7 +178,8 @@ def stream_chat(
     req = urllib.request.Request(
         server_url.rstrip("/") + "/v1/chat/completions",
         data=data,
-        headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
+        headers={"Content-Type": "application/json", "Accept": "text/event-stream",
+                 **({"Authorization": f"Bearer {_API_KEY}"} if _API_KEY else {})},
         method="POST",
     )
     content_parts: list[str] = []
