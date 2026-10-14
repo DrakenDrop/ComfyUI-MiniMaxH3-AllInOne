@@ -246,6 +246,35 @@ class MiniMaxH3R2VGenerate(_Pipeline):
         return images, video, audio, prompt, w, h, frames
 
 
+# Dedicated MiniMax enhancer rules for timed effect/transform edits.
+VIDEO_EDIT_MODE = "video edit (effect/transform)"
+VIDEO_EDIT_SYSTEM_PROMPT = (
+    "VIDEO EDIT MODE (timed effect/transform). These rules override any conflicting rule above. "
+    "The user instruction describes a timed event inside the clip, not a whole-clip restyle. "
+    "1) Keep the source motion, choreography, camera, framing, background and identity exactly; only the described event changes the appearance. "
+    "2) If the instruction contains a first-frame statement (e.g. 'In the very first frame she is still wearing exactly her original outfit...'), copy that sentence verbatim as the first sentence of the main description. "
+    "3) Describe the subject with her ORIGINAL source outfit in subject_definitions / subject descriptions. Never put the new outfit there; the new outfit appears only in the event description at the moment of the trigger. "
+    "4) Never write 'throughout', 'from frame 0', 'for the entire clip' or similar about the new outfit, and never say the target appearance exists from the start. "
+    "5) Keep the user's timing words exactly (e.g. 'at the very beginning', explicit seconds) and the user's trigger exactly (magic wand, flashlight, laser gun, beam, sparkle burst); do not add, remove or replace triggers, props or hands. "
+    "6) Effects happen only once: keep or add the words 'only once' for the trigger effect and the transformation; no repeated flashes, beams or second changes. "
+    "7) After the swap she keeps the new outfit and continues the source motion to the end. "
+    "8) Do not write imperative editing phrases such as 'Apply the outfit change', 'Change the outfit', 'Edit the video'; describe what is seen. "
+    "9) <Picture 1> is the outfit appearance after the transformation, not the first frame.")
+
+# Dedicated system prompt for the Qwen image-edit enhancer (final-state only).
+DEFAULT_QWEN_ENHANCER_SYSTEM_PROMPT = (
+    "You convert a VIDEO edit instruction into a single FINAL-STATE image-edit instruction for Qwen Image Edit. "
+    "Qwen edits ONE still image: <image1> is the source frame (the canvas) and <image2>, when supplied, is the "
+    "target outfit reference. Describe only the final edited image. Ignore and never mention timing, seconds, "
+    "triggers, hands, wands, sparkles, flashes or any other effects, transformations, or statements about the "
+    "first frame or the original outfit being kept. Tell Qwen to change her whole outfit, both top and bottoms, "
+    "into the outfit shown in the reference image <image2>, matching its color, material and design exactly "
+    "(describe the key garment details you see in <image2>). Keep her face, hair, body, pose, background and "
+    "lighting identical to <image1>. If no reference image is supplied, apply the outfit described in the "
+    "instruction in the same final-state way. Write one concise English paragraph. "
+    "Return a JSON object with exactly one string field: qwen_prompt. No Markdown fences.")
+
+
 class MiniMaxH3V2VGenerate(_Pipeline):
     CATEGORY = CATEGORY
     FUNCTION = "generate"
@@ -327,6 +356,9 @@ class MiniMaxH3V2VGenerate(_Pipeline):
                    "Do not enumerate actions or invent gestures, expressions, camera moves or endings. "
                    "Do not add cinematic styling, new lighting or skin-color descriptions.")
             )
+            if kw.get("edit_mode") == VIDEO_EDIT_MODE:
+                system = system.replace("The target appearance must exist from frame 0 throughout the clip, not transform gradually. ", "")
+                system += "\n\n" + VIDEO_EDIT_SYSTEM_PROMPT
             extra = str(kw.get("additional_system_prompt", "")).strip()
             if extra:
                 system += "\n\nAdditional user preferences:\n" + extra
@@ -388,6 +420,9 @@ class MiniMaxH3V2VGenerate(_Pipeline):
                    "\n\nResponse envelope: minimax_prompt is concise prose as a string. ")
                 + "No Markdown fences."
             )
+            if kw.get("edit_mode") == VIDEO_EDIT_MODE:
+                system = system.replace("The target appearance must exist from frame 0 throughout the clip, not transform gradually. ", "")
+                system += "\n\n" + VIDEO_EDIT_SYSTEM_PROMPT
             extra = str(kw.get("additional_system_prompt", "")).strip()
             if extra:
                 system += "\n\nAdditional user preferences:\n" + extra
@@ -417,7 +452,8 @@ class MiniMaxH3V2VGenerate(_Pipeline):
         reuse = kw.get("reuse_preprocessing", True) and model_path is not None
         key = None
         if reuse:
-            key = perf.request_key("unchecked-prompts-v1", system, parts, base, qwen_thinking, minimax_thinking, kw.get("context_size", 32768), CFG,
+            key = perf.request_key("unchecked-prompts-v1", system, str(kw.get("qwen_enhancer_system_prompt") or ""), parts,  # key includes Qwen system prompt
+                                   base, qwen_thinking, minimax_thinking, kw.get("context_size", 32768), CFG,
                                    perf.file_stamp(model_path), perf.file_stamp(mmproj_path))
             cached = cache.get(key)
             if cached is not None:
@@ -444,6 +480,23 @@ class MiniMaxH3V2VGenerate(_Pipeline):
                 {"role": "user", "content": request_parts}, thinking,
                 float(CFG.get("request_timeout_seconds", 600)), False, None, prefill=None)[0]
 
+        # Qwen enhancer with its own system prompt and only the
+        # Qwen images (source first frame + optional reference); no video timeline frames.
+        def run_qwen_enhancer():
+            q_system = (str(kw.get("qwen_enhancer_system_prompt") or "").strip()
+                        or DEFAULT_QWEN_ENHANCER_SYSTEM_PROMPT)
+            q_parts = [{"type": "text", "text": "Video edit instruction (convert it to a final-state image edit): " + instruction},
+                       {"type": "text", "text": "<image1>: source frame, the canvas to edit."},
+                       {"type": "image_url", "image_url": {"url": media.pil_to_data_url(
+                           media.image_batch_to_pil(source[:1])[0], 768)}}]
+            if has_reference:
+                q_parts += [{"type": "text", "text": "<image2>: target outfit reference."},
+                            {"type": "image_url", "image_url": {"url": media.pil_to_data_url(
+                                media.image_batch_to_pil(reference)[0], 768)}}]
+            result = prompt_field_unchecked(request(q_parts, qwen_thinking, q_system), "qwen_prompt")
+            lc.log("V2V Qwen enhancer prompt: " + result)
+            return result
+
         try:
             if not use_qwen:
                 content = request(parts, minimax_thinking)
@@ -469,30 +522,15 @@ class MiniMaxH3V2VGenerate(_Pipeline):
             elif not enhance_minimax:
                 # MiniMax enhancement off: the raw instruction is the MiniMax prompt;
                 # enhance the Qwen image-edit prompt only (one request).
-                qwen_system, h3_system = system.split("For minimax_prompt", 1)
-                qwen_system = qwen_system.replace(
-                    "Return a JSON object with exactly two fields: qwen_prompt and minimax_prompt. ",
-                    "Return a JSON object with exactly one string field: qwen_prompt. ")
-                qwen_system += "\n" + qwen_labels + "No Markdown fences."
-                if extra:
-                    qwen_system += "\nAdditional user preferences:\n" + extra
-                qwen = prompt_field_unchecked(request(parts, qwen_thinking, qwen_system), "qwen_prompt")
+                qwen = run_qwen_enhancer()
                 minimax = ""
                 lc.log("MiniMax enhancement off: Qwen prompt enhanced only; MiniMax uses the raw instruction.")
             else:
-                if qwen_thinking == minimax_thinking:
-                    content = request(parts, qwen_thinking)
-                else:
-                    # Separate calls are necessary: thinking is a per-request setting.
+                # Always two requests: the Qwen prompt comes from the
+                # dedicated final-state system prompt; MiniMax still gets the full instruction.
+                if True:
+                    qwen = run_qwen_enhancer()
                     qwen_system, h3_system = system.split("For minimax_prompt", 1)
-                    qwen_system = qwen_system.replace(
-                        "Return a JSON object with exactly two fields: qwen_prompt and minimax_prompt. ",
-                        "Return a JSON object with exactly one string field: qwen_prompt. ")
-                    qwen_system += "\n" + qwen_labels + "No Markdown fences."
-                    if extra:
-                        qwen_system += "\nAdditional user preferences:\n" + extra
-                    qwen = prompt_field_unchecked(
-                        request(parts, qwen_thinking, qwen_system), "qwen_prompt")
                     h3_system = "For minimax_prompt" + h3_system.split("\n\nResponse envelope:", 1)[0]
                     h3_system += ("\nReturn JSON with exactly one field: minimax_prompt. " +
                                   ("Its value is an object with six non-empty string fields: " +
@@ -572,7 +610,7 @@ class MiniMaxH3V2VGenerate(_Pipeline):
             "qwen_model": (choices("diffusion_models", ["qwen_image_2.1", "qwen_image21", "qwen_image_21"]),),
             "qwen_text_encoder": (choices("text_encoders", ["qwen3vl_8b", "qwen3_vl_8b", "qwen_image_2.1", "qwen3_vl", "qwen3vl"]), {"tooltip": "Qwen Image 2.1 CLIP/text encoder loaded internally from models/text_encoders."}),
             "qwen_vae": (choices("vae", ["qwen_image_2.1", "qwen_image21", "qwen_image"]), {"tooltip": "Qwen Image 2.1 VAE loaded internally from models/vae; decodes qwen_image."}),
-            "edit_mode": (["change clothes", "change person", "custom"], {"default": "change clothes"}),
+            "edit_mode": (["change clothes", "change person", "custom", VIDEO_EDIT_MODE], {"default": "change clothes"}),
         })
         import comfy.samplers
         required["scheduler"] = (list(comfy.samplers.SCHEDULER_NAMES), {"default": "simple"})
@@ -589,6 +627,11 @@ class MiniMaxH3V2VGenerate(_Pipeline):
             "tooltip": "Off = skip only the Qwen prompt enhancement: the Qwen image edit runs on your raw "
                        "instruction verbatim while the llama.cpp enhancer still writes the MiniMax prompt. "
                        "Saves one LLM request and keeps your instruction exactly as written."})})
+        # dedicated Qwen enhancer system prompt
+        optional.update({"qwen_enhancer_system_prompt": ("STRING", {
+            "multiline": True, "default": DEFAULT_QWEN_ENHANCER_SYSTEM_PROMPT,
+            "tooltip": "System prompt for the Qwen image-edit enhancer (used when enhance_qwen_prompt is on). "
+                       "Turns the video instruction into a final-state single-image edit. Empty = built-in default."})})
         optional.update({"enhance_minimax_prompt": ("BOOLEAN", {
             "default": True,
             "tooltip": "Off = skip only the MiniMax prompt enhancement: prompt_override must contain the complete "
@@ -680,7 +723,7 @@ class MiniMaxH3V2VGenerate(_Pipeline):
                                "Replace the source person with the person in the reference image; preserve the source performance."
                                if edit_mode == "change person" else "")
             if not instruction:
-                raise ValueError("Write an edit instruction for custom edit mode")
+                raise ValueError("Write an edit instruction for custom/video edit mode")
         elif not instruction:
             raise ValueError("With both prompt enhancements off, instruction is the prompt used verbatim; it cannot be empty.")
         timer.mark("prepare_frames")
