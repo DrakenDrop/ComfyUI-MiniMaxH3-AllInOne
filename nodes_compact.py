@@ -180,11 +180,11 @@ class MiniMaxH3R2VGenerate(_Pipeline):
     FUNCTION = "generate"
     RETURN_TYPES = ("IMAGE", "VIDEO", "AUDIO", "STRING", "INT", "INT", "INT")
     RETURN_NAMES = ("images", "video", "audio", "prompt", "width", "height", "frame_count")
-    DESCRIPTION = "Up to three reference images + two audio clips -> local llama.cpp prompter -> H3 R2V -> sampler -> VAE Decode IMAGE frames, plus VIDEO and AUDIO. All model loaders are internal."
+    DESCRIPTION = "Up to three reference images + optional audio clips -> local llama.cpp prompter -> H3 R2V -> sampler -> VAE Decode IMAGE frames, plus VIDEO and AUDIO. Without audio references H3 generates all sound from the prompt. All model loaders are internal."
 
     @classmethod
     def INPUT_TYPES(cls):
-        required = {"ref_image": ("IMAGE",), "ref_audio": ("AUDIO",), **common_inputs()}
+        required = {"ref_image": ("IMAGE",), **common_inputs()}
         required.update({
             "h3_audio_vae": (choices("vae", ["h3_audio"]),),
             "duration_seconds": ("FLOAT", {"default": 5.0, "min": 0.21, "max": 15.08, "step": 0.1}),
@@ -194,6 +194,8 @@ class MiniMaxH3R2VGenerate(_Pipeline):
         })
         optional = extra_inputs()
         optional.update({
+            "ref_audio": ("AUDIO", {"tooltip": "Optional audio reference (<Audio 1>). With none connected, H3 "
+                "generates all sound from the prompt; 'reuse reference exactly' then needs at least one audio."}),
             "ref_image_2": ("IMAGE", {"tooltip": "Additional image reference. Connected images are numbered consecutively in input order as <Picture 1>, <Picture 2>, <Picture 3>."}),
             "ref_image_3": ("IMAGE", {"tooltip": "Additional image reference; becomes <Picture 2> if ref_image_2 is disconnected."}),
             "ref_audio_2": ("AUDIO", {"tooltip": "Additional <Audio 2> reference. Map audio to subjects in instruction. Exact reuse still copies only ref_audio (<Audio 1>)."}),
@@ -202,8 +204,9 @@ class MiniMaxH3R2VGenerate(_Pipeline):
         optional.update({"keep_models_loaded": ("BOOLEAN", {"default": False, "tooltip": "Skip forced ComfyUI model unloading before the LLM enhancer and retain Qwen loaders across runs. Uses more memory; ComfyUI may still offload as needed. Leave room for llama.cpp, which has separate GPU memory management."})})
         return {"required": required, "optional": optional}
 
-    def generate(self, ref_image, ref_audio, h3_audio_vae, duration_seconds, audio_mode,
-                 ref_image_1_as_first_frame=False, ref_image_2=None, ref_image_3=None, ref_audio_2=None, **kw):
+    def generate(self, ref_image, h3_audio_vae, duration_seconds, audio_mode,
+                 ref_image_1_as_first_frame=False, ref_audio=None, ref_image_2=None, ref_image_3=None,
+                 ref_audio_2=None, **kw):
         import nodes
         from comfy_extras import nodes_minimax_h3 as h3, nodes_video, nodes_audio
         model, clip, vae = self._base_models(**kw)
@@ -215,13 +218,17 @@ class MiniMaxH3R2VGenerate(_Pipeline):
         ref_audios = [clip for clip in (ref_audio, ref_audio_2) if clip is not None]
         instruction = kw["instruction"]
         if audio_mode == "reuse reference exactly":
+            if not ref_audios:
+                raise ValueError("audio_mode 'reuse reference exactly' needs at least one connected audio reference.")
             instruction += "\nReuse <Audio 1> exactly as the complete target soundtrack."
             if ref_audio_2 is not None:
                 instruction += " <Audio 2> is a conditioning reference only; the output soundtrack copies only <Audio 1>."
-        else:
+        elif ref_audios:
             audio_labels = " and ".join(f"<Audio {i}>" for i in range(1, len(ref_audios) + 1))
             instruction += (f"\nUse {audio_labels} as audio references according to the user's instruction. "
                             "Preserve the requested audio-to-subject mapping; reference numbers do not imply pairings.")
+        else:
+            instruction += "\nNo audio references are supplied; H3 generates all sound itself from the prompt."
         if ref_image_1_as_first_frame:
             instruction += "\n<Picture 1> is the first frame of [Shot 1]; the video begins from <Picture 1>."
         prompt_kw = {**kw, "instruction": instruction, "ref_image_1_as_first_frame": ref_image_1_as_first_frame}
